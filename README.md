@@ -121,6 +121,8 @@ repos:
 
 ## Contributing
 
+- [DeepWiki](https://deepwiki.com/KinjiKawaguchi/nodiscard) — AI-generated codebase documentation
+
 ```bash
 git clone https://github.com/KinjiKawaguchi/nodiscard.git
 cd nodiscard
