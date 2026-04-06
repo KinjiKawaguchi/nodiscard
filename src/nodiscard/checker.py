@@ -55,7 +55,10 @@ def check(
     for file_path, pf in parsed.items():
         tree = pf.tree
         relevant_methods = _gather_relevant_methods(
-            tree, file_path, all_methods, resolver,
+            tree,
+            file_path,
+            all_methods,
+            resolver,
         )
         type_scope = tracker.infer_types(tree, file_path)
         all_violations.extend(
@@ -70,7 +73,6 @@ def check(
         files_skipped=len(skipped),
         skipped_reasons=tuple(skipped),
     )
-
 
 
 def _infer_src_roots(paths: Sequence[Path]) -> list[Path]:
@@ -173,10 +175,7 @@ def _gather_relevant_methods(
     imports = resolver.resolve_imports(tree, file_path)
     imported_files = {imp.resolved_file.resolve() for imp in imports if imp.resolved_file}
 
-    cross_file = [
-        m for m in all_methods
-        if m.file_path.resolve() in imported_files
-    ]
+    cross_file = [m for m in all_methods if m.file_path.resolve() in imported_files]
 
     return local + cross_file
 

@@ -80,9 +80,7 @@ class TestLocalTypeTracker:
         scope: dict[str, TypeInfo] = {
             "MyClass.method:self": TypeInfo(name="MyClass", module_path=None)
         }
-        info = resolve_variable_type(
-            scope, "self", class_name="MyClass", method_name="method"
-        )
+        info = resolve_variable_type(scope, "self", class_name="MyClass", method_name="method")
         assert info.name == "MyClass"
 
     def test_assignment_in_if_block(self) -> None:

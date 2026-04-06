@@ -132,7 +132,7 @@ def u11_tuple_unpacking() -> tuple[Schema, Schema]:
 def u12_walrus_operator() -> Schema:
     """U-12: Walrus operator - result assigned via walrus."""
     schema = Schema()
-    if (result := schema.merge(schema)):  # OK: walrus
+    if result := schema.merge(schema):  # OK: walrus
         return result
     return schema
 

@@ -96,10 +96,7 @@ def _matches_decorator(node: ast.expr, aliases: set[str]) -> bool:
         return node.id in aliases or node.id in _NODISCARD_NAMES
     if isinstance(node, ast.Call):
         return _matches_decorator(node.func, aliases)
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-    ):
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
         qualname = f"{node.value.id}.{node.attr}"
         return qualname in _NODISCARD_QUALNAMES or node.attr in aliases
     return False

@@ -229,12 +229,14 @@ item = Item()
 item.copy()
 """)
 
-        exit_code = main([
-            "check",
-            str(usage_dir),
-            "--src",
-            str(src_dir),
-        ])
+        exit_code = main(
+            [
+                "check",
+                str(usage_dir),
+                "--src",
+                str(src_dir),
+            ]
+        )
 
         # Should detect violation in app/main.py
         assert exit_code == 1
@@ -274,12 +276,14 @@ obj = Bar()
 obj.method()
 """)
 
-        exit_code = main([
-            "check",
-            str(tmp_path),
-            "--config",
-            str(config_file),
-        ])
+        exit_code = main(
+            [
+                "check",
+                str(tmp_path),
+                "--config",
+                str(config_file),
+            ]
+        )
 
         # With exclude pattern, only violation.py is checked
         assert exit_code == 1
@@ -373,14 +377,16 @@ obj.method()
         (tmp_path / "test_one.py").write_text("x = 1")
         (tmp_path / "test_two.py").write_text("x = 2")
 
-        exit_code = main([
-            "check",
-            str(tmp_path),
-            "--exclude",
-            "test_*",
-            "--exclude",
-            "temp_*",
-        ])
+        exit_code = main(
+            [
+                "check",
+                str(tmp_path),
+                "--exclude",
+                "test_*",
+                "--exclude",
+                "temp_*",
+            ]
+        )
 
         # violation.py should be checked
         assert exit_code == 1

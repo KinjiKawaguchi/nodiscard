@@ -45,13 +45,11 @@ class WithOverload:
 
     @overload
     @nodiscard
-    def process(self, value: int) -> int:
-        ...
+    def process(self, value: int) -> int: ...
 
     @overload
     @nodiscard
-    def process(self, value: str) -> str:
-        ...
+    def process(self, value: str) -> str: ...
 
     @nodiscard
     def process(self, value):  # type: ignore
@@ -108,8 +106,7 @@ class MixedAbstractAndOverload:
     @abstractmethod
     @overload
     @nodiscard
-    def method1(self, x: int) -> int:
-        ...
+    def method1(self, x: int) -> int: ...
 
     @abstractmethod
     @overload
@@ -129,13 +126,11 @@ class MixedImpl(MixedAbstractAndOverload):
 
     @overload
     @nodiscard
-    def method1(self, x: int) -> int:
-        ...
+    def method1(self, x: int) -> int: ...
 
     @overload
     @nodiscard
-    def method1(self, x: str) -> str:
-        ...
+    def method1(self, x: str) -> str: ...
 
     @nodiscard
     def method1(self, x):  # type: ignore
@@ -182,13 +177,11 @@ class AlternateDecoratorOrders:
 
     @nodiscard
     @overload
-    def order3(self, x: int) -> int:
-        ...
+    def order3(self, x: int) -> int: ...
 
     @overload
     @nodiscard
-    def order4(self, x: str) -> str:
-        ...
+    def order4(self, x: str) -> str: ...
 
 
 class AlternateImpl(AlternateDecoratorOrders):

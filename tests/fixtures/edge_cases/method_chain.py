@@ -164,9 +164,7 @@ def test_long_chain() -> None:
     builder = ChainedBuilder()
 
     # VIOLATION: long chain discarded
-    builder.set_name("start").add_step("1").add_step("2").add_step("3").add_step(
-        "4"
-    ).add_step("5")
+    builder.set_name("start").add_step("1").add_step("2").add_step("3").add_step("4").add_step("5")
 
 
 def test_chain_with_variable_extraction() -> None:

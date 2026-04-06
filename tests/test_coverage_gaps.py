@@ -712,9 +712,7 @@ def func():
 class TestCheckerCompleteWorkflow:
     """Integration tests for complete checking workflow."""
 
-    def test_checker_with_multiple_violations_different_lines(
-        self, tmp_path: Path
-    ) -> None:
+    def test_checker_with_multiple_violations_different_lines(self, tmp_path: Path) -> None:
         """Checker reports multiple violations at different lines."""
         test_file = tmp_path / "test.py"
         test_file.write_text("""

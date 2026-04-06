@@ -43,7 +43,7 @@ def test_simple_constructor() -> None:
 
 def test_constructor_in_condition() -> None:
     """T-1b: Constructor in if condition."""
-    if (schema := Schema()):  # walrus
+    if schema := Schema():  # walrus
         schema.merge(schema)  # VIOLATION
 
 

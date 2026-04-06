@@ -45,6 +45,7 @@ def nodiscard(
 
     Raises ``TypeError`` when applied to a property descriptor.
     """
+
     def _wrap(fn: F) -> F:
         if isinstance(fn, property):
             msg = "@nodiscard cannot be applied to a property"
@@ -85,6 +86,7 @@ def _wrap_and_mark(fn: F, reason: str) -> F:
     identical to ``fn`` at runtime; the mismatch is purely in the
     type-checker's model of higher-kinded callable types.
     """
+
     @functools.wraps(fn)  # type: ignore[arg-type]
     def wrapper(*args: object, **kwargs: object) -> object:
         return fn(*args, **kwargs)

@@ -8,6 +8,7 @@ from nodiscard import nodiscard
 from nodiscard import nodiscard as nd
 import nodiscard
 
+
 # Using direct import
 @nodiscard
 class DirectImport:
