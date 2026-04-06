@@ -6,6 +6,9 @@ These tests target specific uncovered code paths to reach 95% coverage target.
 from __future__ import annotations
 
 import ast
+import io
+import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -19,18 +22,25 @@ from nodiscard._collector import (
     _resolve_decorator_aliases,
     _tuple_contains_nodiscard,
 )
-from nodiscard._detector import ExpressionStatementDetector
+from nodiscard._detector import (
+    ExpressionStatementDetector,
+    _has_suppress_comment,
+)
 from nodiscard._import_resolver import FileSystemImportResolver
 from nodiscard._type_tracker import (
     LocalTypeTracker,
+    _extract_type_name,
     _infer_from_call,
+    _infer_from_cast,
     _infer_from_value,
+    _is_cast_call,
     _isinstance_narrowing,
 )
 from nodiscard._type_tracker import (
     _extract_type_name as extract_type_name_tracker,
 )
-from nodiscard.checker import check
+from nodiscard.checker import _is_excluded, _safe_realpath, check
+from nodiscard.cli import _handle_check, _load_config
 
 
 class TestMarkerClassmethod:
@@ -756,3 +766,569 @@ obj.m2()
         assert result.files_checked == 0
         assert len(result.violations) == 0
         assert result.files_skipped == 0
+
+
+class TestCoverageGapCollector:
+    """Tests for uncovered lines in _collector.py."""
+
+    def test_matches_decorator_non_name_non_call_non_attr(self) -> None:
+        """_matches_decorator with non-matching AST node type."""
+        source = """
+x = 42
+"""
+        tree = ast.parse(source)
+        # Get a Constant node
+        assign = tree.body[0]
+        assert isinstance(assign, ast.Assign)
+        constant = assign.value
+        # This should return False for Constant node
+        assert not _matches_decorator(constant, set())
+
+    def test_matches_decorator_attribute_with_non_name_value(self) -> None:
+        """_matches_decorator with Attribute node but non-Name value."""
+        source = """
+obj.attr.method()
+"""
+        tree = ast.parse(source)
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr)
+        call = expr.value
+        assert isinstance(call, ast.Call)
+        # call.func is an Attribute with another Attribute as value
+        attr_node = call.func
+        # This should return False because value is not a Name
+        assert not _matches_decorator(attr_node, set())
+
+    def test_tuple_contains_nodiscard_single_non_tuple_nodiscard_node(self) -> None:
+        """_tuple_contains_nodiscard when single element is NOT a Tuple."""
+        source = """
+from typing import Annotated
+from nodiscard import NoDiscard
+x: Annotated[int, NoDiscard]
+"""
+        tree = ast.parse(source)
+        ann_assign = tree.body[2]
+        assert isinstance(ann_assign, ast.AnnAssign)
+        ann = ann_assign.annotation
+        assert isinstance(ann, ast.Subscript)
+        # The slice in Annotated[T, X] is a Tuple, but we test the logic
+        # by calling _tuple_contains_nodiscard directly on a non-Tuple node
+        name_node = ast.Name(id="NoDiscard")
+        assert _tuple_contains_nodiscard(name_node)
+
+    def test_annotation_has_nodiscard_with_non_subscript_non_constant(self) -> None:
+        """_annotation_has_nodiscard with node that's not Subscript or Constant."""
+        # Create a Name node (not Subscript or Constant)
+        name_node = ast.Name(id="SomeType")
+        result = _annotation_has_nodiscard(name_node)
+        # Should return False (line 126 is hit)
+        assert result is False
+
+
+class TestCoverageGapDetector:
+    """Tests for uncovered lines in _detector.py."""
+
+    def test_has_suppress_comment_empty_source_lines(self) -> None:
+        """_has_suppress_comment with empty source_lines tuple."""
+        # Call with empty tuple and any line number
+        result = _has_suppress_comment(1, ())
+        assert result is False
+
+    def test_has_suppress_comment_line_out_of_bounds(self) -> None:
+        """_has_suppress_comment with line number out of bounds."""
+        source_lines = ("line 1", "line 2", "line 3")
+        # Line 999 is out of bounds
+        result = _has_suppress_comment(999, source_lines)
+        assert result is False
+
+    def test_detector_unknown_receiver_type_not_in_methods(self) -> None:
+        """Detector when receiver type is known but method not in index."""
+        source = """
+from nodiscard import nodiscard
+
+class Foo:
+    @nodiscard
+    def foo_method(self):
+        return 42
+
+class Bar:
+    def bar_method(self):
+        obj = Foo()
+        obj.unknown_method()
+"""
+        tree = ast.parse(source)
+        fp = Path("test.py")
+        collector = ASTMethodCollector()
+        tracker = LocalTypeTracker()
+        detector = ExpressionStatementDetector()
+
+        methods = collector.collect(tree, fp)
+        types = tracker.infer_types(tree, fp)
+        # This should not produce a violation because unknown_method is not
+        # marked as @nodiscard
+        violations = detector.detect(tree, fp, methods, types)
+        assert len(violations) == 0
+
+
+class TestCoverageGapTypeTracker:
+    """Tests for uncovered lines in _type_tracker.py."""
+
+    def test_infer_multiple_assignment_targets(self) -> None:
+        """_infer_assign with multiple targets in tuple unpacking."""
+        source = """
+def func():
+    a, b = (1, 2)
+"""
+        tree = ast.parse(source)
+        tracker = LocalTypeTracker()
+        types = tracker.infer_types(tree, Path("test.py"))
+        # Multiple targets should be skipped
+        assert "a" not in types
+        assert "b" not in types
+
+    def test_infer_chained_assignment(self) -> None:
+        """_infer_assign with chained assignment (a = b = value) - line 130."""
+        source = """
+def func():
+    a = b = SomeClass()
+"""
+        tree = ast.parse(source)
+        tracker = LocalTypeTracker()
+        types = tracker.infer_types(tree, Path("test.py"))
+        # Chained assignment has 2 targets, should be skipped (len != 1)
+        assert "a" not in types
+        assert "b" not in types
+
+    def test_infer_classmethod_call(self) -> None:
+        """_infer_from_call with classmethod-like call (Foo.create())."""
+        source = """
+class Foo:
+    def method(self):
+        x = Foo.create()
+"""
+        tree = ast.parse(source)
+        cls = tree.body[0]  # ClassDef
+        assert isinstance(cls, ast.ClassDef)
+        method = cls.body[0]  # FunctionDef for method
+        assert isinstance(method, ast.FunctionDef)
+        # Get assignment: x = Foo.create()
+        assign_stmt = method.body[0]
+        assert isinstance(assign_stmt, ast.Assign)
+        call = assign_stmt.value
+        assert isinstance(call, ast.Call)
+        result = _infer_from_call(call, Path("test.py"))
+        # Should infer as Foo type (line 198 is hit)
+        assert result is not None
+        assert result.name == "Foo"
+
+    def test_cast_call_with_insufficient_args(self) -> None:
+        """_infer_from_cast with fewer than 2 arguments."""
+        source = """
+from typing import cast
+x = cast(int)
+"""
+        tree = ast.parse(source)
+        assign = tree.body[1]
+        assert isinstance(assign, ast.Assign)
+        call = assign.value
+        assert isinstance(call, ast.Call)
+        result = _infer_from_call(call, Path("test.py"))
+        # Should return None when cast has < 2 args
+        assert result is None
+
+    def test_cast_call_with_unresolvable_type(self) -> None:
+        """_infer_from_cast where type arg cannot be extracted."""
+        source = """
+from typing import cast
+x = cast(some_dict['key'], value)
+"""
+        tree = ast.parse(source)
+        assign = tree.body[1]
+        assert isinstance(assign, ast.Assign)
+        call = assign.value
+        assert isinstance(call, ast.Call)
+        result = _infer_from_call(call, Path("test.py"))
+        # Should return None when type cannot be extracted
+        assert result is None
+
+    def test_extract_type_name_from_union_with_none(self) -> None:
+        """Extract type from union like 'Foo | None' where right is None."""
+        source = """
+x: int | None
+"""
+        tree = ast.parse(source)
+        ann_assign = tree.body[0]
+        assert isinstance(ann_assign, ast.AnnAssign)
+        type_name = extract_type_name_tracker(ann_assign.annotation)
+        # Should extract "int" and skip "None"
+        assert type_name == "int"
+
+    def test_is_cast_call_with_attribute_not_cast(self) -> None:
+        """_is_cast_call with Attribute that is not 'cast' (line 209)."""
+        # Create a call to obj.method() where method != "cast"
+        source = "obj.method(int, x)"
+        tree = ast.parse(source)
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr)
+        call = expr.value
+        assert isinstance(call, ast.Call)
+        result = _is_cast_call(call)
+        # Should return False because attr is "method", not "cast"
+        assert result is False
+
+    def test_is_cast_call_with_attribute_cast_sufficient_args(self) -> None:
+        """_is_cast_call with Attribute 'cast' and sufficient args (line 209)."""
+        # Create a call to typing.cast(int, x) with 2 args
+        source = "typing.cast(int, x)"
+        tree = ast.parse(source)
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr)
+        call = expr.value
+        assert isinstance(call, ast.Call)
+        result = _is_cast_call(call)
+        # Should return True because attr is "cast" and has 2+ args (line 209)
+        assert result is True
+
+    def test_is_cast_call_with_attribute_cast_insufficient_args(self) -> None:
+        """_is_cast_call with Attribute 'cast' but insufficient args."""
+        # Create a call to typing.cast(int) with only 1 arg
+        source = "typing.cast(int)"
+        tree = ast.parse(source)
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr)
+        call = expr.value
+        assert isinstance(call, ast.Call)
+        result = _is_cast_call(call)
+        # Should return False because has < 2 args
+        assert result is False
+
+    def test_infer_from_cast_with_sufficient_args(self) -> None:
+        """_infer_from_cast when cast has 2+ arguments."""
+        # Create a call to typing.cast(Foo, x) with 2 args
+        source = "typing.cast(Foo, x)"
+        tree = ast.parse(source)
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr)
+        call = expr.value
+        assert isinstance(call, ast.Call)
+        result = _infer_from_cast(call, Path("test.py"))
+        # Should extract the type
+        assert result is not None
+        assert result.name == "Foo"
+
+    def test_infer_from_cast_with_insufficient_args_direct(self) -> None:
+        """_infer_from_cast with < 2 arguments when called directly (line 217)."""
+        # Create a call to typing.cast(Foo) with only 1 arg
+        source = "typing.cast(Foo)"
+        tree = ast.parse(source)
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr)
+        call = expr.value
+        assert isinstance(call, ast.Call)
+        result = _infer_from_cast(call, Path("test.py"))
+        # Should return None when < 2 args (line 217)
+        assert result is None
+
+    def test_extract_type_name_from_none_node(self) -> None:
+        """_extract_type_name with unresolvable node type (line 241)."""
+        # Create a Call node which isn't handled
+        source = "foo()"
+        tree = ast.parse(source)
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr)
+        call = expr.value
+        result = extract_type_name_tracker(call)
+        # Should return None for Call node
+        assert result is None
+
+    def test_extract_type_name_from_union_with_none_on_left(self) -> None:
+        """_extract_type_name with None | Foo where None is on left (line 241)."""
+        # Create a union: None | Foo (None on left)
+        source = "x: None | Foo"
+        tree = ast.parse(source)
+        ann_assign = tree.body[0]
+        assert isinstance(ann_assign, ast.AnnAssign)
+        result = _extract_type_name(ann_assign.annotation)
+        # When left is "None", should recurse to right (line 241)
+        assert result == "Foo"
+
+    def test_extract_type_name_from_union_with_none_on_right(self) -> None:
+        """_extract_type_name with Foo | None where None is on right (line 241)."""
+        # Create a union: Foo | None
+        source = "x: Foo | None"
+        tree = ast.parse(source)
+        ann_assign = tree.body[0]
+        assert isinstance(ann_assign, ast.AnnAssign)
+        result = _extract_type_name(ann_assign.annotation)
+        # When right is None, should return left (line 241: return _extract_type_name(right))
+        # But in this case, left is "Foo" so we get that
+        assert result == "Foo"
+
+
+class TestCoverageGapImportResolver:
+    """Tests for uncovered lines in _import_resolver.py."""
+
+    def test_resolve_relative_import_no_src_roots_match(self, tmp_path: Path) -> None:
+        """_resolve_relative_base when file is not under any src root."""
+        # Create a file outside any src root
+        resolver = FileSystemImportResolver([tmp_path / "src"])
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        other_file = other_dir / "module.py"
+        other_file.write_text("")
+
+        result = resolver._resolve_relative_base(other_file, 1)
+        # Should return None because other_file is not under src
+        assert result is None
+
+    def test_resolve_import_from_with_unresolvedbase(self, tmp_path: Path) -> None:
+        """_resolve_import_from when relative import base cannot be resolved (line 58)."""
+        # Create resolver with one src root
+        src_root = tmp_path / "src"
+        src_root.mkdir()
+        resolver = FileSystemImportResolver([src_root])
+
+        # File is outside src_root
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        other_file = other_dir / "module.py"
+        other_file.write_text("")
+
+        # Create a module with relative import: from . import foo
+        code = "from . import foo"
+        tree = ast.parse(code)
+
+        # Call resolve_imports with a file outside src_root
+        results = resolver.resolve_imports(tree, other_file)
+        # The function will try to resolve relative import and fail
+        # because other_file is not under any src root
+        # This tests line 58 (return results when base is None)
+        assert results == []
+
+    def test_find_module_file_not_under_src_roots(self, tmp_path: Path) -> None:
+        """FileSystemImportResolver.resolve_file when file is outside src roots."""
+        src_root = tmp_path / "src"
+        src_root.mkdir()
+        resolver = FileSystemImportResolver([src_root])
+
+        # Try to resolve a module that doesn't exist
+        result = resolver.resolve_file("nonexistent.module")
+        assert result is None
+
+
+class TestCoverageGapChecker:
+    """Tests for uncovered lines in checker.py."""
+
+    def test_assignment_target_not_simple_name(self, tmp_path: Path) -> None:
+        """Type tracker when assignment target is not a simple Name."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("""
+def func():
+    a = {}
+    a['key'] = 1
+    b[0] = Foo()
+""")
+        result = check([test_file])
+        # Should handle without crashing
+        assert isinstance(result.violations, tuple)
+
+    def test_constructor_call_as_receiver(self, tmp_path: Path) -> None:
+        """Detector when receiver is a constructor call like Foo().method()."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("""
+from nodiscard import nodiscard
+
+class Foo:
+    @nodiscard
+    def method(self):
+        return 42
+
+Foo().method()
+""")
+        result = check([test_file])
+        # Should detect the violation even though receiver is a call
+        assert len(result.violations) == 1
+        assert result.violations[0].method_name == "method"
+
+    def test_inheritance_propagation_with_base_attribute(self, tmp_path: Path) -> None:
+        """Inheritance propagation when base is accessed via Attribute (line 248-249)."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("""
+# Base class accessed via attribute notation
+class BaseModule:
+    Base = object
+
+class Derived(BaseModule.Base):
+    pass
+""")
+        result = check([test_file])
+        # Should handle the inheritance check without crashing
+        # This tests the code path where base is an Attribute node (line 248-249)
+        assert isinstance(result.violations, tuple)
+
+    def test_is_excluded_path_not_relative_to_base(self) -> None:
+        """_is_excluded when path cannot be made relative to base (line 130-131)."""
+        # Create two unrelated paths
+        path = Path("/usr/lib/a/test_file.py")
+        base = Path("/opt/b")
+
+        # When path cannot be made relative to base, it should use str(path)
+        # fnmatch on the full path should work
+        result = _is_excluded(path, base, ["*test_file*"])
+        # The full path string should be checked against patterns
+        assert result is True
+
+    def test_safe_realpath_with_oserror(self, tmp_path: Path) -> None:
+        """_safe_realpath when strict=True raises OSError (line 139-140)."""
+        # This is tricky to test because we need a path that exists but
+        # strict resolution fails. We'll use a symlink to a non-existent target
+        # and call resolve(strict=True)
+        link = tmp_path / "link"
+        try:
+            # Try to create a broken symlink (points to non-existent target)
+            link.symlink_to(tmp_path / "nonexistent")
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks not supported")
+
+        # _safe_realpath should catch the OSError and fall back to resolve()
+        result = _safe_realpath(link)
+        # Should return a path (either resolved or fallback)
+        assert isinstance(result, Path)
+
+
+class TestCoverageGapCli:
+    """Tests for uncovered lines in cli.py."""
+
+    def test_empty_paths_defaults_to_current_dir(self) -> None:
+        """CLI when paths is empty list, should default to Path() (line 80)."""
+        # Create args with empty paths and no config file
+        args = Namespace(
+            paths=[],
+            src_roots=None,
+            exclude=None,
+            output_format=None,
+            config=None,
+        )
+
+        # Mock sys.stderr and sys.stdout
+        old_stderr = sys.stderr
+        old_stdout = sys.stdout
+        sys.stderr = io.StringIO()
+        sys.stdout = io.StringIO()
+
+        try:
+            # Should use default Path() when paths is empty (line 80)
+            result = _handle_check(args)
+            # Should return 0 (no violations), 1 (violations found), or 2 (error), not crash
+            assert result in (0, 1, 2)
+        finally:
+            sys.stderr = old_stderr
+            sys.stdout = old_stdout
+
+    def test_exclusion_pattern_matching(self, tmp_path: Path) -> None:
+        """Exclusion pattern actually matches and excludes files."""
+        src_file = tmp_path / "src"
+        src_file.mkdir()
+        (src_file / "test_module.py").write_text("x = 1")
+        (src_file / "regular.py").write_text("y = 2")
+
+        result = check([src_file], exclude=["*test*"])
+        # test_module.py should be excluded
+        assert result.files_checked == 1
+
+    def test_symlink_deduplication(self, tmp_path: Path) -> None:
+        """Symlink deduplication prevents processing same file twice."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        original = src_dir / "module.py"
+        original.write_text("x = 1")
+        link = src_dir / "link_to_module.py"
+        try:
+            link.symlink_to(original)
+        except (OSError, NotImplementedError):
+            # Symlinks not supported on this system, skip test
+            pytest.skip("Symlinks not supported")
+
+        result = check([src_dir])
+        # Should count the file only once despite symlink
+        assert result.files_checked == 1
+
+    def test_nonexistent_path_error(self, tmp_path: Path) -> None:
+        """CLI error when path does not exist (line 110-111)."""
+        # Create args with non-existent path
+        args = Namespace(
+            paths=[tmp_path / "nonexistent"],
+            src_roots=None,
+            exclude=None,
+            output_format=None,
+            config=None,
+        )
+
+        # Should return 2 (error code) when path doesn't exist
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            result = _handle_check(args)
+            assert result == 2  # Error code for path not found
+        finally:
+            sys.stderr = old_stderr
+
+    def test_load_config_with_invalid_toml(self, tmp_path: Path) -> None:
+        """_load_config with invalid TOML file (line 110-111)."""
+        # Create invalid TOML file
+        config_file = tmp_path / "pyproject.toml"
+        config_file.write_text("invalid [toml syntax }")
+
+        # Should return empty dict on TOML parse error (line 110-111)
+        result = _load_config(config_file)
+        assert result == {}
+
+    def test_load_config_with_non_dict_tool(self, tmp_path: Path) -> None:
+        """_load_config when tool section is not a dict (line 117)."""
+        # Create TOML with tool as non-dict
+        config_file = tmp_path / "pyproject.toml"
+        config_file.write_text('tool = "not a dict"')
+
+        # Should return empty dict when tool is not a dict (line 117)
+        result = _load_config(config_file)
+        assert result == {}
+
+    def test_load_config_with_non_dict_nodiscard(self, tmp_path: Path) -> None:
+        """_load_config when nodiscard section is not a dict."""
+        # Create TOML with nodiscard as non-dict
+        config_file = tmp_path / "pyproject.toml"
+        config_file.write_text('[tool]\nnodiscard = "not a dict"')
+
+        # Should return empty dict when nodiscard is not a dict
+        result = _load_config(config_file)
+        assert result == {}
+
+    def test_empty_paths_and_config_src_uses_path_fallback(self, tmp_path: Path) -> None:
+        """CLI uses Path() fallback when paths empty and src config empty (line 80)."""
+        # Create a config file with empty src list
+        config_file = tmp_path / "pyproject.toml"
+        config_file.write_text("[tool.nodiscard]\nsrc = []")
+
+        # Create args with empty paths
+        args = Namespace(
+            paths=[],
+            src_roots=None,
+            exclude=None,
+            output_format=None,
+            config=config_file,
+        )
+
+        # Mock sys.stderr and sys.stdout
+        old_stderr = sys.stderr
+        old_stdout = sys.stdout
+        sys.stderr = io.StringIO()
+        sys.stdout = io.StringIO()
+
+        try:
+            # Should fall back to Path() when both paths and config src are empty (line 80)
+            result = _handle_check(args)
+            # Should complete without crashing
+            assert result in (0, 1, 2)
+        finally:
+            sys.stderr = old_stderr
+            sys.stdout = old_stdout

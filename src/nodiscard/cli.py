@@ -165,5 +165,5 @@ def _violation_to_dict(v: Violation) -> dict[str, object]:
     }
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
