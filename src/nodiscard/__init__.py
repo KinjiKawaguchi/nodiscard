@@ -2,5 +2,5 @@
 
 from nodiscard._marker import NoDiscard, nodiscard
 
-__version__ = "0.0.0"
+__version__ = "0.1.0"
 __all__ = ["NoDiscard", "nodiscard"]
