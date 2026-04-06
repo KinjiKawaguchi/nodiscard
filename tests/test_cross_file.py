@@ -91,9 +91,35 @@ u.with_name("alice")
 
         result = check([tmp_path], src_roots=[tmp_path])
 
-        # Re-export case may or may not detect depending on import resolution
-        # This tests that processing completes without error
-        assert result.files_checked >= 2
+        assert len(result.violations) == 1
+        assert result.violations[0].method_name == "with_name"
+
+    def test_reexport_through_non_init_module(self, tmp_path: Path) -> None:
+        """Re-export through a regular module (not __init__.py) is detected."""
+        (tmp_path / "core.py").write_text("""
+from nodiscard import nodiscard
+
+class Config:
+    @nodiscard
+    def with_debug(self, enabled):
+        return Config()
+""")
+
+        (tmp_path / "adapter.py").write_text("""
+from core import Config
+""")
+
+        (tmp_path / "app.py").write_text("""
+from adapter import Config
+
+c = Config()
+c.with_debug(True)
+""")
+
+        result = check([tmp_path], src_roots=[tmp_path])
+
+        assert len(result.violations) == 1
+        assert result.violations[0].method_name == "with_debug"
 
     def test_x4_multiple_directories_all_checked(self, tmp_path: Path) -> None:
         """X-4: Multiple directories → all files checked."""

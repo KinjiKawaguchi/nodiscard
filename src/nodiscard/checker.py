@@ -51,6 +51,8 @@ def check(
 
     all_methods = _resolve_inheritance(all_methods, parsed)
 
+    import_ctx = _ImportWalkContext(resolver=resolver, parsed=parsed)
+
     all_violations: list[Violation] = []
     for file_path, pf in parsed.items():
         tree = pf.tree
@@ -58,7 +60,7 @@ def check(
             tree,
             file_path,
             all_methods,
-            resolver,
+            import_ctx,
         )
         type_scope = tracker.infer_types(tree, file_path)
         all_violations.extend(
@@ -162,22 +164,54 @@ def _safe_parse(
     )
 
 
+@dataclass
+class _ImportWalkContext:
+    """State for recursively collecting files reachable through imports."""
+
+    resolver: FileSystemImportResolver
+    parsed: dict[Path, ParsedFile]
+    reachable: set[Path] = field(default_factory=set)
+
+
 def _gather_relevant_methods(
     tree: ast.Module,
     file_path: Path,
     all_methods: list[NodiscardMethod],
-    resolver: FileSystemImportResolver,
+    ctx: _ImportWalkContext,
 ) -> list[NodiscardMethod]:
     """Gather @nodiscard methods relevant to this file (local + imported)."""
     resolved_file = file_path.resolve()
     local = [m for m in all_methods if m.file_path.resolve() == resolved_file]
 
-    imports = resolver.resolve_imports(tree, file_path)
-    imported_files = {imp.resolved_file.resolve() for imp in imports if imp.resolved_file}
+    ctx.reachable = set()
+    _walk_imports(tree, file_path, ctx)
 
-    cross_file = [m for m in all_methods if m.file_path.resolve() in imported_files]
+    cross_file = [m for m in all_methods if m.file_path.resolve() in ctx.reachable]
 
     return local + cross_file
+
+
+def _walk_imports(
+    tree: ast.Module,
+    file_path: Path,
+    ctx: _ImportWalkContext,
+) -> None:
+    """Recursively collect all files reachable through import chains.
+
+    Circular imports are safe: the visited set (ctx.reachable) prevents revisiting.
+    """
+    imports = ctx.resolver.resolve_imports(tree, file_path)
+    for imp in imports:
+        if imp.resolved_file is None:
+            continue
+        resolved = imp.resolved_file.resolve()
+        if resolved in ctx.reachable:
+            continue
+        ctx.reachable.add(resolved)
+
+        pf = ctx.parsed.get(resolved)
+        if pf is not None:
+            _walk_imports(pf.tree, resolved, ctx)
 
 
 @dataclass
