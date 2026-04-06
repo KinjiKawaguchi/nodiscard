@@ -1,7 +1,6 @@
 """Immutable data models used across the checker pipeline."""
 
-from __future__ import annotations
-
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,3 +55,12 @@ class ImportedName:
     original_name: str
     module_path: str
     resolved_file: Path | None
+
+
+@dataclass(frozen=True)
+class ParsedFile:
+    """A parsed Python source file with its AST and source lines."""
+
+    file_path: Path
+    tree: ast.Module
+    source_lines: tuple[str, ...]

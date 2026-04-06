@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ast
-from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from nodiscard._models import TypeInfo
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _UNKNOWN = TypeInfo(name="Unknown", module_path=None)
 
@@ -29,7 +31,7 @@ class LocalTypeTracker:
         tree: ast.Module,
         file_path: Path,
     ) -> dict[str, TypeInfo]:
-        """Return a mapping of ``(scope, variable_name) → TypeInfo``."""
+        """Return a mapping of variable_name → TypeInfo."""
         scope: dict[str, TypeInfo] = {}
         self._collect_module_level(tree, file_path, scope)
         return scope
@@ -52,7 +54,7 @@ class LocalTypeTracker:
         file_path: Path,
         scope: dict[str, TypeInfo],
     ) -> None:
-        """Register self → ClassName for all methods in a class."""
+        """Register self -> ClassName for all methods in a class."""
         for item in cls.body:
             if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -99,13 +101,10 @@ class LocalTypeTracker:
         file_path: Path,
         scope: dict[str, TypeInfo],
     ) -> None:
-        # x = Foo()
         if isinstance(stmt, ast.Assign):
             self._infer_assign(stmt, file_path, scope)
-        # x: Foo = ...
         elif isinstance(stmt, ast.AnnAssign):
             self._infer_ann_assign(stmt, file_path, scope)
-        # Recurse into control flow
         elif isinstance(stmt, ast.If):
             self._handle_if(stmt, file_path, scope)
         elif isinstance(stmt, (ast.For, ast.While)):
@@ -178,47 +177,43 @@ def resolve_variable_type(
 
 def _infer_from_value(value: ast.expr, file_path: Path) -> TypeInfo | None:
     """Infer type from a value expression."""
-    # x = Foo()
     if isinstance(value, ast.Call):
         return _infer_from_call(value, file_path)
-
-    # x = cast(Foo, something)
-    if isinstance(value, ast.Call) and _is_cast_call(value):
-        return _infer_from_cast(value, file_path)
-
     return None
 
 
 def _infer_from_call(call: ast.Call, file_path: Path) -> TypeInfo | None:
     """Infer type from a call expression like ``Foo()`` or ``Foo.create()``."""
-    # cast(Foo, ...) — handle before general call
     if _is_cast_call(call):
         return _infer_from_cast(call, file_path)
 
     func = call.func
-    # Foo()
     if isinstance(func, ast.Name) and func.id[0:1].isupper():
         return TypeInfo(name=func.id, module_path=file_path)
-    # Foo.create() — classmethod
-    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        if func.value.id[0:1].isupper():
-            return TypeInfo(name=func.value.id, module_path=file_path)
+    if (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id[0:1].isupper()
+    ):
+        return TypeInfo(name=func.value.id, module_path=file_path)
     return None
 
 
 def _is_cast_call(call: ast.Call) -> bool:
     """Check if a call is ``cast(T, x)``."""
     func = call.func
+    min_args = 2
     if isinstance(func, ast.Name) and func.id == "cast":
-        return len(call.args) >= 2  # noqa: PLR2004
+        return len(call.args) >= min_args
     if isinstance(func, ast.Attribute) and func.attr == "cast":
-        return len(call.args) >= 2  # noqa: PLR2004
+        return len(call.args) >= min_args
     return False
 
 
 def _infer_from_cast(call: ast.Call, file_path: Path) -> TypeInfo | None:
     """Extract type from ``cast(Foo, expr)``."""
-    if len(call.args) < 2:  # noqa: PLR2004
+    min_args = 2
+    if len(call.args) < min_args:
         return None
     type_arg = call.args[0]
     name = _extract_type_name(type_arg)
@@ -233,10 +228,12 @@ def _extract_type_name(node: ast.expr) -> str | None:
         return node.id
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value.split("[")[0].strip()
-    # Optional[Foo] / Foo | None → extract Foo
-    if isinstance(node, ast.Subscript):
-        if isinstance(node.value, ast.Name) and node.value.id == "Optional":
-            return _extract_type_name(node.slice)
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "Optional"
+    ):
+        return _extract_type_name(node.slice)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         left = _extract_type_name(node.left)
         if left and left != "None":
@@ -252,7 +249,8 @@ def _isinstance_narrowing(test: ast.expr) -> tuple[str, str] | None:
     func = test.func
     if not (isinstance(func, ast.Name) and func.id == "isinstance"):
         return None
-    if len(test.args) != 2:  # noqa: PLR2004
+    expected_args = 2
+    if len(test.args) != expected_args:
         return None
     var_arg, type_arg = test.args
     if not isinstance(var_arg, ast.Name):

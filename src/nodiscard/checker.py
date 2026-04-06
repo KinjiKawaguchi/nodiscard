@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import logging
 import os
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,15 +13,13 @@ from typing import TYPE_CHECKING
 from nodiscard._collector import ASTMethodCollector
 from nodiscard._detector import ExpressionStatementDetector
 from nodiscard._import_resolver import FileSystemImportResolver
-from nodiscard._models import CheckResult, NodiscardMethod, Violation
+from nodiscard._models import CheckResult, NodiscardMethod, ParsedFile, Violation
 from nodiscard._type_tracker import LocalTypeTracker
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
-
-_MAX_IMPORT_DEPTH = 20
 
 
 def check(
@@ -39,40 +38,39 @@ def check(
     resolver = FileSystemImportResolver(effective_src)
 
     all_methods: list[NodiscardMethod] = []
-    parsed_trees: dict[Path, ast.Module] = {}
+    parsed: dict[Path, ParsedFile] = {}
     skipped: list[tuple[Path, str]] = []
 
-    # Phase 1: parse all files and collect @nodiscard methods
     for file_path in files:
-        tree = _safe_parse(file_path, skipped)
-        if tree is None:
+        pf = _safe_parse(file_path, skipped)
+        if pf is None:
             continue
-        parsed_trees[file_path] = tree
+        parsed[file_path] = pf
+        tree = pf.tree
         all_methods.extend(collector.collect(tree, file_path))
 
-    # Phase 1.5: resolve cross-file inheritance
-    all_methods = _resolve_inheritance(all_methods, parsed_trees, collector, resolver)
+    all_methods = _resolve_inheritance(all_methods, parsed)
 
-    # Phase 2: detect violations in each file
     all_violations: list[Violation] = []
-    for file_path, tree in parsed_trees.items():
-        # Merge methods from all files + imported modules
+    for file_path, pf in parsed.items():
+        tree = pf.tree
         relevant_methods = _gather_relevant_methods(
             tree, file_path, all_methods, resolver,
         )
         type_scope = tracker.infer_types(tree, file_path)
         all_violations.extend(
-            detector.detect(tree, file_path, relevant_methods, type_scope),
+            detector.detect(tree, file_path, relevant_methods, type_scope, pf.source_lines),
         )
 
     all_violations.sort(key=lambda v: (str(v.file_path), v.line, v.col))
 
     return CheckResult(
         violations=tuple(all_violations),
-        files_checked=len(parsed_trees),
+        files_checked=len(parsed),
         files_skipped=len(skipped),
         skipped_reasons=tuple(skipped),
     )
+
 
 
 def _infer_src_roots(paths: Sequence[Path]) -> list[Path]:
@@ -84,7 +82,7 @@ def _infer_src_roots(paths: Sequence[Path]) -> list[Path]:
             roots.append(resolved)
         elif resolved.is_file():
             roots.append(resolved.parent)
-    return roots if roots else [Path.cwd()]
+    return roots or [Path.cwd()]
 
 
 def _collect_files(
@@ -103,7 +101,7 @@ def _collect_files(
                 seen.add(real)
                 files.append(resolved)
         elif resolved.is_dir():
-            for root, _dirs, filenames in os.walk(resolved):
+            for root, _, filenames in os.walk(resolved):
                 for name in filenames:
                     fp = Path(root) / name
                     if not _is_python_file(fp):
@@ -141,7 +139,7 @@ def _safe_realpath(path: Path) -> Path:
 def _safe_parse(
     file_path: Path,
     skipped: list[tuple[Path, str]],
-) -> ast.Module | None:
+) -> ParsedFile | None:
     """Parse a Python file, skipping binary/syntax-error files."""
     try:
         source = file_path.read_text(encoding="utf-8")
@@ -155,9 +153,11 @@ def _safe_parse(
         skipped.append((file_path, f"Syntax error: {e}"))
         return None
 
-    # Attach source lines for inline suppress comments
-    tree._source_lines = source.splitlines()  # type: ignore[attr-defined]  # noqa: SLF001
-    return tree
+    return ParsedFile(
+        file_path=file_path,
+        tree=tree,
+        source_lines=tuple(source.splitlines()),
+    )
 
 
 def _gather_relevant_methods(
@@ -171,21 +171,30 @@ def _gather_relevant_methods(
     local = [m for m in all_methods if m.file_path.resolve() == resolved_file]
 
     imports = resolver.resolve_imports(tree, file_path)
-    imported_files = {imp.resolved_file for imp in imports if imp.resolved_file}
+    imported_files = {imp.resolved_file.resolve() for imp in imports if imp.resolved_file}
 
     cross_file = [
         m for m in all_methods
-        if m.file_path.resolve() in {f.resolve() for f in imported_files}
+        if m.file_path.resolve() in imported_files
     ]
 
     return local + cross_file
 
 
+@dataclass
+class _InheritanceContext:
+    """State for propagating @nodiscard across the class hierarchy."""
+
+    nodiscard_by_class: dict[str, set[str]]
+    class_bases: dict[str, list[str]]
+    class_locations: dict[str, tuple[Path, int]]
+    result: list[NodiscardMethod]
+    visited: set[str] = field(default_factory=set)
+
+
 def _resolve_inheritance(
     methods: list[NodiscardMethod],
-    parsed_trees: dict[Path, ast.Module],
-    collector: ASTMethodCollector,
-    resolver: FileSystemImportResolver,
+    parsed: dict[Path, ParsedFile],
 ) -> list[NodiscardMethod]:
     """Propagate @nodiscard from parent classes to subclasses."""
     nodiscard_by_class: dict[str, set[str]] = {}
@@ -195,7 +204,8 @@ def _resolve_inheritance(
     class_bases: dict[str, list[str]] = {}
     class_locations: dict[str, tuple[Path, int]] = {}
 
-    for file_path, tree in parsed_trees.items():
+    for file_path, pf in parsed.items():
+        tree = pf.tree
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 bases = []
@@ -207,54 +217,48 @@ def _resolve_inheritance(
                 class_bases[node.name] = bases
                 class_locations[node.name] = (file_path, node.lineno)
 
-    inherited: list[NodiscardMethod] = list(methods)
-    visited: set[str] = set()
+    ctx = _InheritanceContext(
+        nodiscard_by_class=nodiscard_by_class,
+        class_bases=class_bases,
+        class_locations=class_locations,
+        result=list(methods),
+    )
 
     for class_name, bases in class_bases.items():
-        _propagate(
-            class_name, bases, nodiscard_by_class, class_bases,
-            class_locations, inherited, visited,
-        )
+        _propagate(class_name, bases, ctx)
 
-    return inherited
+    return ctx.result
 
 
 def _propagate(
     class_name: str,
     bases: list[str],
-    nodiscard_by_class: dict[str, set[str]],
-    class_bases: dict[str, list[str]],
-    class_locations: dict[str, tuple[Path, int]],
-    result: list[NodiscardMethod],
-    visited: set[str],
+    ctx: _InheritanceContext,
 ) -> None:
-    if class_name in visited:
+    if class_name in ctx.visited:
         return
-    visited.add(class_name)
+    ctx.visited.add(class_name)
 
-    own_methods = nodiscard_by_class.get(class_name, set())
-    location = class_locations.get(class_name)
+    own_methods = ctx.nodiscard_by_class.get(class_name, set())
+    location = ctx.class_locations.get(class_name)
 
     for base_name in bases:
-        # Recurse into base first
-        if base_name in class_bases:
-            _propagate(
-                base_name, class_bases[base_name], nodiscard_by_class,
-                class_bases, class_locations, result, visited,
-            )
+        if base_name in ctx.class_bases:
+            _propagate(base_name, ctx.class_bases[base_name], ctx)
 
-        parent_methods = nodiscard_by_class.get(base_name, set())
+        parent_methods = ctx.nodiscard_by_class.get(base_name, set())
         for method_name in parent_methods:
             if method_name not in own_methods and location is not None:
                 file_path, line = location
-                inherited_method = NodiscardMethod(
-                    class_name=class_name,
-                    method_name=method_name,
-                    file_path=file_path,
-                    line=line,
-                    is_inherited=True,
+                ctx.result.append(
+                    NodiscardMethod(
+                        class_name=class_name,
+                        method_name=method_name,
+                        file_path=file_path,
+                        line=line,
+                        is_inherited=True,
+                    ),
                 )
-                result.append(inherited_method)
                 own_methods.add(method_name)
 
-    nodiscard_by_class[class_name] = own_methods
+    ctx.nodiscard_by_class[class_name] = own_methods

@@ -7,9 +7,12 @@ import json
 import sys
 import tomllib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from nodiscard._models import CheckResult, Violation
 from nodiscard.checker import check
+
+if TYPE_CHECKING:
+    from nodiscard._models import CheckResult, Violation
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,15 +75,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def _handle_check(args: argparse.Namespace) -> int:
     config = _load_config(args.config)
 
-    paths = args.paths or [Path(p) for p in config.get("src", ["."])]
+    paths: list[Path] = args.paths or [Path(p) for p in _config_str_list(config, "src", ["."])]
     if not paths:
-        paths = [Path(".")]
+        paths = [Path()]
 
-    src_roots = args.src_roots or None
-    exclude = args.exclude or config.get("exclude", [])
-    output_format = args.output_format or config.get("format", "text")
+    src_roots: list[Path] | None = args.src_roots or None
+    exclude = args.exclude or _config_str_list(config, "exclude", [])
+    output_format = args.output_format or _config_str(config, "format", "text")
 
-    # Validate paths exist
     for p in paths:
         if not p.exists():
             sys.stderr.write(f"Error: path does not exist: {p}\n")
@@ -105,9 +107,28 @@ def _load_config(config_path: Path | None) -> dict[str, object]:
     try:
         with config_path.open("rb") as f:
             data = tomllib.load(f)
-        return data.get("tool", {}).get("nodiscard", {})
     except (tomllib.TOMLDecodeError, OSError):
         return {}
+    tool = data.get("tool", {})
+    if isinstance(tool, dict):
+        section = tool.get("nodiscard", {})
+        if isinstance(section, dict):
+            return section
+    return {}
+
+
+def _config_str(config: dict[str, object], key: str, default: str) -> str:
+    """Extract a string value from config with type safety."""
+    value = config.get(key, default)
+    return value if isinstance(value, str) else default
+
+
+def _config_str_list(config: dict[str, object], key: str, default: list[str]) -> list[str]:
+    """Extract a list-of-strings value from config with type safety."""
+    value = config.get(key, default)
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return value
+    return default
 
 
 def _output_text(result: CheckResult) -> None:

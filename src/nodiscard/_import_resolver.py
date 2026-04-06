@@ -11,8 +11,6 @@ from nodiscard._models import ImportedName
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-_MAX_RESOLVE_DEPTH = 20
-
 
 class ImportResolver(Protocol):
     """Protocol for import resolution."""
@@ -63,7 +61,7 @@ class FileSystemImportResolver:
             full_module = module
 
         for alias in node.names:
-            local = alias.asname if alias.asname else alias.name
+            local = alias.asname or alias.name
             resolved = self._find_module_file(full_module)
             results.append(
                 ImportedName(
@@ -78,7 +76,7 @@ class FileSystemImportResolver:
     def _resolve_import(self, node: ast.Import) -> list[ImportedName]:
         results: list[ImportedName] = []
         for alias in node.names:
-            local = alias.asname if alias.asname else alias.name
+            local = alias.asname or alias.name
             resolved = self._find_module_file(alias.name)
             results.append(
                 ImportedName(
@@ -116,16 +114,13 @@ class FileSystemImportResolver:
     def _do_find(self, module_path: str) -> Path | None:
         parts = module_path.split(".")
         for root in self._src_roots:
-            # Try as package/__init__.py
             pkg_init = root / Path(*parts) / "__init__.py"
             if pkg_init.is_file():
                 return pkg_init
-            # Try as module.py
             if len(parts) >= 1:
                 mod_file = root / Path(*parts[:-1]) / f"{parts[-1]}.py"
                 if mod_file.is_file():
                     return mod_file
-            # Try .pyi stub
             pyi_file = root / Path(*parts[:-1]) / f"{parts[-1]}.pyi"
             if pyi_file.is_file():
                 return pyi_file
