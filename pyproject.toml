@@ -41,13 +41,15 @@ dev = ["pytest>=8.0", "pytest-cov>=6.0", "ruff>=0.12", "ty>=0.0.1", "pip-audit>=
 [tool.ruff]
 target-version = "py311"
 line-length = 99
+extend-exclude = ["tests/fixtures/edge_cases/syntax_error.py"]
 
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = ["D1", "COM812", "ISC001", "D203", "D213"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "ANN", "D", "PLR2004", "SLF001"]
+"tests/**/*.py" = ["S101", "ANN", "D", "PLR2004", "SLF001", "TC001", "TC003"]
+"tests/fixtures/**/*.py" = ["ALL"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -137,9 +137,7 @@ class Foo:
 code = "obj = Foo(); obj.method()"
 exec(code)
 """
-        violations = _check_source(source)
-        # exec() calls are not analyzed for return values
-        # So no violation should be detected inside the exec string
+        _check_source(source)
 
     def test_e8_large_file_no_crash(self) -> None:
         """E-8: Large file (1000+ lines) → no crash."""
@@ -153,8 +151,7 @@ class Foo:
 obj = Foo()
 """)
         # Add 1000 lines of assignments
-        for i in range(1000):
-            lines.append(f"x{i} = {i}")
+        lines.extend(f"x{i} = {i}" for i in range(1000))
 
         lines.append("obj.method()")
 

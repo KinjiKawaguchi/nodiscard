@@ -113,7 +113,7 @@ obj.method()
             main(["--help"])
         assert exc_info.value.code == 0
 
-    def test_cli6_text_output_format(self, tmp_path: Path, capsys):  # type: ignore
+    def test_cli6_text_output_format(self, tmp_path: Path, capsys):
         """CLI-6: Text output format matches `path:line:col: ND001 ...`."""
         violation_file = tmp_path / "test.py"
         violation_file.write_text("""
@@ -172,7 +172,7 @@ obj.method()
 
         assert exit_code == 2
 
-    def test_cli9_json_output_format(self, tmp_path: Path, capsys):  # type: ignore
+    def test_cli9_json_output_format(self, tmp_path: Path, capsys):
         """CLI-9: --format json → valid JSON output."""
         violation_file = tmp_path / "test.py"
         violation_file.write_text("""
@@ -284,7 +284,7 @@ obj.method()
         # With exclude pattern, only violation.py is checked
         assert exit_code == 1
 
-    def test_default_path_is_current_dir(self, tmp_path: Path, monkeypatch):  # type: ignore
+    def test_default_path_is_current_dir(self, tmp_path: Path, monkeypatch):
         """Default path when not specified."""
         monkeypatch.chdir(tmp_path)
 
@@ -296,7 +296,7 @@ obj.method()
         # Should check current directory without error
         assert exit_code in (0, 1)
 
-    def test_no_subcommand_prints_help(self, capsys):  # type: ignore
+    def test_no_subcommand_prints_help(self, capsys):
         """No subcommand provided → print help."""
         exit_code = main([])
 
@@ -304,7 +304,7 @@ obj.method()
         captured = capsys.readouterr()
         assert "nodiscard" in captured.out or "usage" in captured.out.lower()
 
-    def test_multiple_violations_all_reported(self, tmp_path: Path, capsys):  # type: ignore
+    def test_multiple_violations_all_reported(self, tmp_path: Path, capsys):
         """Multiple violations are all reported."""
         violation_file = tmp_path / "violations.py"
         violation_file.write_text("""
@@ -327,7 +327,7 @@ obj.method()
         # Should report 3 violations
         assert "3 error" in captured.out
 
-    def test_json_output_contains_all_fields(self, tmp_path: Path, capsys):  # type: ignore
+    def test_json_output_contains_all_fields(self, tmp_path: Path, capsys):
         """JSON output has all required fields."""
         violation_file = tmp_path / "test.py"
         violation_file.write_text("""
@@ -402,7 +402,7 @@ obj.method()
         # Should only check .py files
         assert exit_code == 0
 
-    def test_text_output_error_count(self, tmp_path: Path, capsys):  # type: ignore
+    def test_text_output_error_count(self, tmp_path: Path, capsys):
         """Text output reports error count."""
         (tmp_path / "violations.py").write_text("""
 from nodiscard import nodiscard
@@ -422,7 +422,7 @@ obj.method()
 
         assert "Found 2 errors" in captured.out
 
-    def test_text_output_single_error(self, tmp_path: Path, capsys):  # type: ignore
+    def test_text_output_single_error(self, tmp_path: Path, capsys):
         """Text output reports singular 'error' for single violation."""
         (tmp_path / "violation.py").write_text("""
 from nodiscard import nodiscard

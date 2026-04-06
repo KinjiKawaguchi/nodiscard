@@ -72,7 +72,7 @@ class TestDecoratorBasics:
         class MyClass:
             @classmethod
             @nodiscard
-            def from_string(cls, s: str) -> MyClass:
+            def from_string(cls, _s: str) -> MyClass:
                 return cls()
 
         result = MyClass.from_string("test")

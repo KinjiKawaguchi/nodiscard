@@ -264,10 +264,7 @@ obj = MyClass()
 obj.method()
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
-
-        # import * is analyzed, but might not resolve to specific methods
-        # depending on implementation details
+        check([tmp_path], src_roots=[tmp_path])
 
     def test_nested_package_structure(self, tmp_path: Path) -> None:
         """Nested package with @nodiscard across packages."""
