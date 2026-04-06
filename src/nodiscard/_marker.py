@@ -94,4 +94,4 @@ def _wrap_and_mark(fn: F, reason: str) -> F:
     setattr(wrapper, NODISCARD_ATTR, True)
     if reason:
         setattr(wrapper, _REASON_ATTR, reason)
-    return wrapper  # type: ignore[return-value]
+    return wrapper  # type: ignore[return-value]  # ty: ignore[invalid-return-type]

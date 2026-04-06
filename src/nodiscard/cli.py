@@ -125,9 +125,9 @@ def _config_str(config: dict[str, object], key: str, default: str) -> str:
 
 def _config_str_list(config: dict[str, object], key: str, default: list[str]) -> list[str]:
     """Extract a list-of-strings value from config with type safety."""
-    value = config.get(key, default)
+    value = config.get(key)
     if isinstance(value, list) and all(isinstance(v, str) for v in value):
-        return value
+        return [str(v) for v in value]
     return default
 
 
