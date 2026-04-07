@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/KinjiKawaguchi/nodiscard/compare/v0.1.0...v0.1.1) (2026-04-07)
+
+
+### Bug Fixes
+
+* eliminate false positives and negatives in type inference ([#2](https://github.com/KinjiKawaguchi/nodiscard/issues/2)) ([3324150](https://github.com/KinjiKawaguchi/nodiscard/commit/3324150f4242ddda3a3a4413b6699469e22de3ed))
+
 ## 0.1.0 (2026-04-06)
 
 
