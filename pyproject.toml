@@ -1,6 +1,6 @@
 [project]
 name = "nodiscard"
-version = "0.1.0"
+version = "0.1.1"
 description = "A @nodiscard decorator and static checker for Python — detect when return values of marked methods are silently discarded"
 readme = "README.md"
 license = "MIT"
