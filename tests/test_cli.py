@@ -81,25 +81,16 @@ obj.method()
         subdir = tmp_path / "subdir"
         subdir.mkdir()
 
-        (tmp_path / "file1.py").write_text("""
-from nodiscard import nodiscard
-
-class Foo:
-    @nodiscard
-    def method(self):
-        return 42
-""")
-
         (subdir / "file2.py").write_text("""
 from nodiscard import nodiscard
 
-class Bar:
+class RecursiveTarget:
     @nodiscard
-    def method(self):
+    def recursive_method(self):
         return 42
 
-obj = Bar()
-obj.method()
+obj = RecursiveTarget()
+obj.recursive_method()
 """)
 
         exit_code = main(["check", str(tmp_path)])
@@ -195,51 +186,6 @@ obj.method()
         assert "violations" in data
         assert "summary" in data
         assert data["summary"]["violations"] >= 1
-
-    def test_cli10_src_option_sets_import_root(self, tmp_path: Path) -> None:
-        """CLI-10: --src sets source root for import resolution."""
-        # Create model with @nodiscard in src tree
-        src_dir = tmp_path / "src"
-        src_dir.mkdir()
-
-        pkg = src_dir / "pkg"
-        pkg.mkdir()
-        (pkg / "__init__.py").write_text("")
-        (pkg / "models.py").write_text("""
-from nodiscard import nodiscard
-
-class Item:
-    @nodiscard
-    def copy(self):
-        return Item()
-""")
-
-        # Create direct violation in app directory
-        usage_dir = tmp_path / "app"
-        usage_dir.mkdir()
-        (usage_dir / "main.py").write_text("""
-from nodiscard import nodiscard
-
-class Item:
-    @nodiscard
-    def copy(self):
-        return Item()
-
-item = Item()
-item.copy()
-""")
-
-        exit_code = main(
-            [
-                "check",
-                str(usage_dir),
-                "--src",
-                str(src_dir),
-            ]
-        )
-
-        # Should detect violation in app/main.py
-        assert exit_code == 1
 
     def test_cli11_pyproject_toml_config_read(self, tmp_path: Path) -> None:
         """CLI-11: pyproject.toml [tool.nodiscard] config is read."""

@@ -23,7 +23,9 @@ from nodiscard._collector import (
     _tuple_contains_nodiscard,
 )
 from nodiscard._detector import (
+    DetectionContext,
     ExpressionStatementDetector,
+    _build_method_index,
     _has_suppress_comment,
 )
 from nodiscard._import_resolver import FileSystemImportResolver
@@ -478,7 +480,15 @@ obj.gen()
 
         methods = collector.collect(tree, fp)
         types = tracker.infer_types(tree, fp)
-        violations = detector.detect(tree, fp, methods, types, tuple(source.splitlines()))
+        ctx = DetectionContext(
+            tree=tree,
+            file_path=fp,
+            method_index=_build_method_index(methods),
+            all_class_methods={},
+            type_scope=types,
+            source_lines=tuple(source.splitlines()),
+        )
+        violations = detector.detect(ctx)
 
         # Even generator methods marked @nodiscard shouldn't be discarded
         assert len(violations) == 1
@@ -504,7 +514,15 @@ obj.fetch()
 
         methods = collector.collect(tree, fp)
         types = tracker.infer_types(tree, fp)
-        violations = detector.detect(tree, fp, methods, types, tuple(source.splitlines()))
+        ctx = DetectionContext(
+            tree=tree,
+            file_path=fp,
+            method_index=_build_method_index(methods),
+            all_class_methods={},
+            type_scope=types,
+            source_lines=tuple(source.splitlines()),
+        )
+        violations = detector.detect(ctx)
 
         assert len(violations) == 1
 
@@ -866,7 +884,15 @@ class Bar:
         types = tracker.infer_types(tree, fp)
         # This should not produce a violation because unknown_method is not
         # marked as @nodiscard
-        violations = detector.detect(tree, fp, methods, types)
+        ctx = DetectionContext(
+            tree=tree,
+            file_path=fp,
+            method_index=_build_method_index(methods),
+            all_class_methods={},
+            type_scope=types,
+            source_lines=tuple(source.splitlines()),
+        )
+        violations = detector.detect(ctx)
         assert len(violations) == 0
 
 
@@ -1204,7 +1230,6 @@ class TestCoverageGapCli:
         # Create args with empty paths and no config file
         args = Namespace(
             paths=[],
-            src_roots=None,
             exclude=None,
             output_format=None,
             config=None,
@@ -1258,7 +1283,6 @@ class TestCoverageGapCli:
         # Create args with non-existent path
         args = Namespace(
             paths=[tmp_path / "nonexistent"],
-            src_roots=None,
             exclude=None,
             output_format=None,
             config=None,
@@ -1312,7 +1336,6 @@ class TestCoverageGapCli:
         # Create args with empty paths
         args = Namespace(
             paths=[],
-            src_roots=None,
             exclude=None,
             output_format=None,
             config=config_file,

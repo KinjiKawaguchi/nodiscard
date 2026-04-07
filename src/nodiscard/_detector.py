@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from nodiscard._models import NodiscardMethod, TypeInfo, Violation
-from nodiscard._type_tracker import resolve_variable_type
+from nodiscard._type_tracker import resolve_attribute_type, resolve_variable_type
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -16,11 +16,13 @@ _INLINE_SUPPRESS = "nodiscard: ignore"
 
 
 @dataclass
-class _DetectionContext:
-    """Bundle of state passed through the detection walk."""
+class DetectionContext:
+    """Bundle of state for the detection walk. Built by the checker facade."""
 
+    tree: ast.Module
     file_path: Path
     method_index: dict[str, set[str]]
+    all_class_methods: dict[str, set[str]]
     type_scope: dict[str, TypeInfo]
     source_lines: tuple[str, ...]
     violations: list[Violation] = field(default_factory=list)
@@ -29,39 +31,26 @@ class _DetectionContext:
 class ExpressionStatementDetector:
     """Detect @nodiscard method calls used as bare expression statements."""
 
-    def detect(
-        self,
-        tree: ast.Module,
-        file_path: Path,
-        methods: list[NodiscardMethod],
-        type_scope: dict[str, TypeInfo],
-        source_lines: tuple[str, ...] = (),
-    ) -> list[Violation]:
-        """Find all violations in *tree*."""
-        ctx = _DetectionContext(
-            file_path=file_path,
-            method_index=_build_method_index(methods),
-            type_scope=type_scope,
-            source_lines=source_lines,
-        )
-        _walk_stmts(tree.body, ctx)
+    def detect(self, ctx: DetectionContext) -> list[Violation]:
+        """Find all violations using the provided detection context."""
+        _walk_stmts(ctx.tree.body, ctx)
         return ctx.violations
 
 
-def _walk_stmts(stmts: list[ast.stmt], ctx: _DetectionContext) -> None:
+def _walk_stmts(stmts: list[ast.stmt], ctx: DetectionContext) -> None:
     for stmt in stmts:
         if isinstance(stmt, ast.Expr):
             _check_expr_stmt(stmt, ctx)
         _recurse_into(stmt, ctx)
 
 
-def _check_expr_stmt(stmt: ast.Expr, ctx: _DetectionContext) -> None:
+def _check_expr_stmt(stmt: ast.Expr, ctx: DetectionContext) -> None:
     call = _unwrap_await(stmt.value)
     if not isinstance(call, ast.Call):
         return
     if _has_suppress_comment(stmt.lineno, ctx.source_lines):
         return
-    match = _match_nodiscard_call(call, ctx.method_index, ctx.type_scope)
+    match = _match_nodiscard_call(call, ctx.method_index, ctx.type_scope, ctx.all_class_methods)
     if match is not None:
         method_name, receiver_type = match
         ctx.violations.append(
@@ -77,7 +66,7 @@ def _check_expr_stmt(stmt: ast.Expr, ctx: _DetectionContext) -> None:
         )
 
 
-def _recurse_into(stmt: ast.stmt, ctx: _DetectionContext) -> None:
+def _recurse_into(stmt: ast.stmt, ctx: DetectionContext) -> None:
     """Recurse into compound statements (if, for, try, with, etc.)."""
     child_bodies: list[list[ast.stmt]] = []
     if isinstance(stmt, (ast.If, ast.For, ast.While)):
@@ -118,6 +107,7 @@ def _match_nodiscard_call(
     call: ast.Call,
     method_index: dict[str, set[str]],
     type_scope: dict[str, TypeInfo],
+    all_class_methods: dict[str, set[str]],
 ) -> tuple[str, str | None] | None:
     """Return (method_name, receiver_type) if the call targets a @nodiscard method."""
     func = call.func
@@ -133,7 +123,12 @@ def _match_nodiscard_call(
             return (method_name, receiver_type)
         return None
 
-    # Fallback: check all classes when type is unknown
+    # Fallback: check all classes when type is unknown.
+    # Skip if the method name also exists on a non-@nodiscard class
+    # (ambiguous — could be a false positive).
+    if _is_ambiguous_method(method_name, method_index, all_class_methods):
+        return None
+
     for class_name, methods in method_index.items():
         if method_name in methods:
             return (method_name, class_name)
@@ -141,14 +136,41 @@ def _match_nodiscard_call(
     return None
 
 
+def _is_ambiguous_method(
+    method_name: str,
+    method_index: dict[str, set[str]],
+    all_class_methods: dict[str, set[str]],
+) -> bool:
+    """Check if *method_name* exists on both @nodiscard and non-@nodiscard classes."""
+    nodiscard_classes = {cls for cls, methods in method_index.items() if method_name in methods}
+    all_classes = {cls for cls, methods in all_class_methods.items() if method_name in methods}
+    non_nodiscard_classes = all_classes - nodiscard_classes
+    return len(non_nodiscard_classes) > 0
+
+
 def _resolve_receiver_type(
     receiver: ast.expr,
     type_scope: dict[str, TypeInfo],
 ) -> str | None:
-    """Resolve the type name of a method call receiver."""
+    """Resolve the type name of a method call receiver.
+
+    Handles:
+    - Simple names: ``obj.method()`` → look up obj's type
+    - Attribute chains: ``obj.attr.method()`` → resolve obj's type, then attr's type
+    - Constructor calls: ``Foo().method()`` → Foo
+    """
     if isinstance(receiver, ast.Name):
         info = resolve_variable_type(type_scope, receiver.id)
         return info.name if info.name != "Unknown" else None
+
+    # obj.attr → resolve obj first, then look up attr's type annotation
+    if isinstance(receiver, ast.Attribute):
+        parent_type = _resolve_receiver_type(receiver.value, type_scope)
+        if parent_type is not None:
+            attr_info = resolve_attribute_type(type_scope, parent_type, receiver.attr)
+            if attr_info.name != "Unknown":
+                return attr_info.name
+        return None
 
     if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Name):
         name = receiver.func.id

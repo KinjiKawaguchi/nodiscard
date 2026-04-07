@@ -1,4 +1,4 @@
-"""Simple local-scope type inference for receiver type tracking."""
+"""Type inference for receiver type tracking."""
 
 from __future__ import annotations
 
@@ -24,29 +24,37 @@ class TypeTracker(Protocol):
 
 
 class LocalTypeTracker:
-    """Infer types for local variables within function scopes."""
+    """Infer types for variables across all scopes including module level."""
 
     def infer_types(
         self,
         tree: ast.Module,
         file_path: Path,
     ) -> dict[str, TypeInfo]:
-        """Return a mapping of variable_name → TypeInfo."""
+        """Return a mapping of variable_name -> TypeInfo."""
         scope: dict[str, TypeInfo] = {}
-        self._collect_module_level(tree, file_path, scope)
+        self._collect_all(tree, file_path, scope)
         return scope
 
-    def _collect_module_level(
+    def _collect_all(
         self,
         tree: ast.Module,
         file_path: Path,
         scope: dict[str, TypeInfo],
     ) -> None:
+        # Register class self/cls and class attribute annotations
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 self._register_class_self(node, file_path, scope)
+                self._register_class_attributes(node, file_path, scope)
+
+        # Infer types in function scopes
+        for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self._infer_function_scope(node, file_path, scope)
+
+        # Infer types at module level (top-level statements)
+        self._infer_body(tree.body, file_path, scope)
 
     def _register_class_self(
         self,
@@ -62,6 +70,23 @@ class LocalTypeTracker:
                 first_arg = item.args.args[0].arg
                 key = f"{cls.name}.{item.name}:{first_arg}"
                 scope[key] = TypeInfo(name=cls.name, module_path=file_path)
+
+    def _register_class_attributes(
+        self,
+        cls: ast.ClassDef,
+        file_path: Path,
+        scope: dict[str, TypeInfo],
+    ) -> None:
+        """Register class attribute annotations for attribute chain resolution.
+
+        For ``class Foo: bar: Bar``, stores ``Foo.bar -> Bar`` in scope.
+        """
+        for item in cls.body:
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                type_name = _extract_type_name(item.annotation)
+                if type_name is not None:
+                    key = f"{cls.name}.{item.target.id}"
+                    scope[key] = TypeInfo(name=type_name, module_path=file_path)
 
     def _infer_function_scope(
         self,
@@ -173,6 +198,19 @@ def resolve_variable_type(
         if key in scope:
             return scope[key]
     return scope.get(var_name, _UNKNOWN)
+
+
+def resolve_attribute_type(
+    scope: dict[str, TypeInfo],
+    receiver_type: str,
+    attr_name: str,
+) -> TypeInfo:
+    """Resolve the type of ``receiver.attr`` using class attribute annotations.
+
+    Looks up ``ClassName.attr_name`` in the scope.
+    """
+    key = f"{receiver_type}.{attr_name}"
+    return scope.get(key, _UNKNOWN)
 
 
 def _infer_from_value(value: ast.expr, file_path: Path) -> TypeInfo | None:

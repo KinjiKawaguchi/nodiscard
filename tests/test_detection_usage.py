@@ -2,26 +2,7 @@
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
-from nodiscard._collector import ASTMethodCollector
-from nodiscard._detector import ExpressionStatementDetector
-from nodiscard._models import Violation
-from nodiscard._type_tracker import LocalTypeTracker
-
-
-def _check_source(source: str) -> list[Violation]:
-    """Parse source and detect violations."""
-    tree = ast.parse(source)
-    tree._source_lines = source.splitlines()  # type: ignore[attr-defined]
-    fp = Path("test.py")
-    collector = ASTMethodCollector()
-    tracker = LocalTypeTracker()
-    detector = ExpressionStatementDetector()
-    methods = collector.collect(tree, fp)
-    types = tracker.infer_types(tree, fp)
-    return detector.detect(tree, fp, methods, types, tuple(source.splitlines()))
+from tests.conftest import check_source
 
 
 class TestCorrectUsagePatterns:
@@ -39,7 +20,7 @@ class Foo:
 obj = Foo()
 x = obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u2_reassignment(self) -> None:
@@ -55,7 +36,7 @@ class Foo:
 obj = Foo()
 obj = obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u3_return_statement(self) -> None:
@@ -71,7 +52,7 @@ class Foo:
 def get_value(obj):
     return obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u4_yield_statement(self) -> None:
@@ -87,7 +68,7 @@ class Foo:
 def generator(obj):
     yield obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u5_function_argument(self) -> None:
@@ -103,7 +84,7 @@ class Foo:
 obj = Foo()
 print(obj.method())
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u6_if_condition(self) -> None:
@@ -120,7 +101,7 @@ obj = Foo()
 if obj.method():
     pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u7_while_condition(self) -> None:
@@ -137,7 +118,7 @@ obj = Foo()
 while obj.method():
     break
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u8_assert_statement(self) -> None:
@@ -153,7 +134,7 @@ class Foo:
 obj = Foo()
 assert obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u9_list_comprehension(self) -> None:
@@ -169,7 +150,7 @@ class Foo:
 obj = Foo()
 items = [obj.method() for _ in range(1)]
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u10_ternary_expression(self) -> None:
@@ -185,7 +166,7 @@ class Foo:
 obj = Foo()
 x = obj.method() if True else 0
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u11_tuple_unpacking(self) -> None:
@@ -201,7 +182,7 @@ class Foo:
 obj = Foo()
 a, b = obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u12_walrus_operator(self) -> None:
@@ -218,7 +199,7 @@ obj = Foo()
 if (x := obj.method()):
     pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u13_method_chaining(self) -> None:
@@ -237,7 +218,7 @@ class Foo:
 obj = Foo()
 result = obj.method().chained()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u14_await_async_method(self) -> None:
@@ -255,7 +236,7 @@ async def main():
     obj = Foo()
     x = await obj.async_method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u15_underscore_assignment(self) -> None:
@@ -271,7 +252,7 @@ class Foo:
 obj = Foo()
 _ = obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u16_for_loop_iteration(self) -> None:
@@ -288,7 +269,7 @@ obj = Foo()
 for x in obj.method():
     pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u17_with_statement(self) -> None:
@@ -311,7 +292,7 @@ obj = Foo()
 with obj.method() as x:
     pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u18_match_statement(self) -> None:
@@ -329,7 +310,7 @@ match obj.method():
     case 1:
         pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u19_raise_from_exception(self) -> None:
@@ -348,7 +329,7 @@ try:
 except Exception:
     pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u20_or_expression(self) -> None:
@@ -364,7 +345,7 @@ class Foo:
 obj = Foo()
 x = False or obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u21_list_literal(self) -> None:
@@ -380,7 +361,7 @@ class Foo:
 obj = Foo()
 x = [obj.method()]
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u22_f_string(self) -> None:
@@ -396,7 +377,7 @@ class Foo:
 obj = Foo()
 s = f"{obj.method()}"
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u23_dict_assignment(self) -> None:
@@ -413,7 +394,7 @@ obj = Foo()
 d = {}
 d['key'] = obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u24_binop_assigned(self) -> None:
@@ -429,7 +410,7 @@ class Foo:
 obj = Foo()
 x = obj.method() + 5
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_u25_unary_assigned(self) -> None:
@@ -445,7 +426,7 @@ class Foo:
 obj = Foo()
 x = not obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_and_expression(self) -> None:
@@ -461,7 +442,7 @@ class Foo:
 obj = Foo()
 x = True and obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_tuple_literal(self) -> None:
@@ -477,7 +458,7 @@ class Foo:
 obj = Foo()
 x = (obj.method(),)
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_dict_literal(self) -> None:
@@ -493,5 +474,5 @@ class Foo:
 obj = Foo()
 x = {'key': obj.method()}
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0

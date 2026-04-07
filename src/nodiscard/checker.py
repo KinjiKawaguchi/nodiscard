@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import logging
 import os
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -11,31 +10,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nodiscard._collector import ASTMethodCollector
-from nodiscard._detector import ExpressionStatementDetector
-from nodiscard._import_resolver import FileSystemImportResolver
+from nodiscard._detector import DetectionContext, ExpressionStatementDetector, _build_method_index
 from nodiscard._models import CheckResult, NodiscardMethod, ParsedFile, Violation
 from nodiscard._type_tracker import LocalTypeTracker
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-logger = logging.getLogger(__name__)
-
 
 def check(
     paths: Sequence[Path],
     *,
-    src_roots: Sequence[Path] | None = None,
     exclude: Sequence[str] = (),
 ) -> CheckResult:
     """Run the full nodiscard check on the given paths."""
-    effective_src = list(src_roots) if src_roots else _infer_src_roots(paths)
     files = _collect_files(paths, exclude)
 
     collector = ASTMethodCollector()
     tracker = LocalTypeTracker()
     detector = ExpressionStatementDetector()
-    resolver = FileSystemImportResolver(effective_src)
 
     all_methods: list[NodiscardMethod] = []
     parsed: dict[Path, ParsedFile] = {}
@@ -46,26 +39,24 @@ def check(
         if pf is None:
             continue
         parsed[file_path] = pf
-        tree = pf.tree
-        all_methods.extend(collector.collect(tree, file_path))
+        all_methods.extend(collector.collect(pf.tree, file_path))
 
     all_methods = _resolve_inheritance(all_methods, parsed)
-
-    import_ctx = _ImportWalkContext(resolver=resolver, parsed=parsed)
+    all_class_methods = _collect_all_class_methods(parsed)
+    global_method_index = _build_method_index(all_methods)
 
     all_violations: list[Violation] = []
     for file_path, pf in parsed.items():
-        tree = pf.tree
-        relevant_methods = _gather_relevant_methods(
-            tree,
-            file_path,
-            all_methods,
-            import_ctx,
+        type_scope = tracker.infer_types(pf.tree, file_path)
+        ctx = DetectionContext(
+            tree=pf.tree,
+            file_path=file_path,
+            method_index=global_method_index,
+            all_class_methods=all_class_methods,
+            type_scope=type_scope,
+            source_lines=pf.source_lines,
         )
-        type_scope = tracker.infer_types(tree, file_path)
-        all_violations.extend(
-            detector.detect(tree, file_path, relevant_methods, type_scope, pf.source_lines),
-        )
+        all_violations.extend(detector.detect(ctx))
 
     all_violations.sort(key=lambda v: (str(v.file_path), v.line, v.col))
 
@@ -75,18 +66,6 @@ def check(
         files_skipped=len(skipped),
         skipped_reasons=tuple(skipped),
     )
-
-
-def _infer_src_roots(paths: Sequence[Path]) -> list[Path]:
-    """Infer source roots from the given paths."""
-    roots: list[Path] = []
-    for p in paths:
-        resolved = p.resolve()
-        if resolved.is_dir():
-            roots.append(resolved)
-        elif resolved.is_file():
-            roots.append(resolved.parent)
-    return roots or [Path.cwd()]
 
 
 def _collect_files(
@@ -164,54 +143,18 @@ def _safe_parse(
     )
 
 
-@dataclass
-class _ImportWalkContext:
-    """State for recursively collecting files reachable through imports."""
-
-    resolver: FileSystemImportResolver
-    parsed: dict[Path, ParsedFile]
-    reachable: set[Path] = field(default_factory=set)
-
-
-def _gather_relevant_methods(
-    tree: ast.Module,
-    file_path: Path,
-    all_methods: list[NodiscardMethod],
-    ctx: _ImportWalkContext,
-) -> list[NodiscardMethod]:
-    """Gather @nodiscard methods relevant to this file (local + imported)."""
-    resolved_file = file_path.resolve()
-    local = [m for m in all_methods if m.file_path.resolve() == resolved_file]
-
-    ctx.reachable = set()
-    _walk_imports(tree, file_path, ctx)
-
-    cross_file = [m for m in all_methods if m.file_path.resolve() in ctx.reachable]
-
-    return local + cross_file
-
-
-def _walk_imports(
-    tree: ast.Module,
-    file_path: Path,
-    ctx: _ImportWalkContext,
-) -> None:
-    """Recursively collect all files reachable through import chains.
-
-    Circular imports are safe: the visited set (ctx.reachable) prevents revisiting.
-    """
-    imports = ctx.resolver.resolve_imports(tree, file_path)
-    for imp in imports:
-        if imp.resolved_file is None:
-            continue
-        resolved = imp.resolved_file.resolve()
-        if resolved in ctx.reachable:
-            continue
-        ctx.reachable.add(resolved)
-
-        pf = ctx.parsed.get(resolved)
-        if pf is not None:
-            _walk_imports(pf.tree, resolved, ctx)
+def _collect_all_class_methods(parsed: dict[Path, ParsedFile]) -> dict[str, set[str]]:
+    """Build class_name -> {all method names} for every class in parsed files."""
+    result: dict[str, set[str]] = {}
+    for pf in parsed.values():
+        for node in ast.walk(pf.tree):
+            if isinstance(node, ast.ClassDef):
+                methods: set[str] = set()
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        methods.add(item.name)
+                result.setdefault(node.name, set()).update(methods)
+    return result
 
 
 @dataclass
@@ -238,8 +181,7 @@ def _resolve_inheritance(
     class_locations: dict[str, tuple[Path, int]] = {}
 
     for file_path, pf in parsed.items():
-        tree = pf.tree
-        for node in ast.walk(tree):
+        for node in ast.walk(pf.tree):
             if isinstance(node, ast.ClassDef):
                 bases = []
                 for base in node.bases:

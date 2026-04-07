@@ -5,28 +5,12 @@ Tests E-1 through E-18 for edge cases, robustness, and special scenarios.
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
 
-from nodiscard._collector import ASTMethodCollector
-from nodiscard._detector import ExpressionStatementDetector
-from nodiscard._models import Violation
-from nodiscard._type_tracker import LocalTypeTracker
 from nodiscard.checker import check
-
-
-def _check_source(source: str) -> list[Violation]:
-    """Parse source and detect violations."""
-    tree = ast.parse(source)
-    fp = Path("test.py")
-    collector = ASTMethodCollector()
-    tracker = LocalTypeTracker()
-    detector = ExpressionStatementDetector()
-    methods = collector.collect(tree, fp)
-    types = tracker.infer_types(tree, fp)
-    return detector.detect(tree, fp, methods, types, tuple(source.splitlines()))
+from tests.conftest import check_source
 
 
 class TestEdgeCases:
@@ -46,14 +30,14 @@ class Foo:
 obj = Foo()
 obj.side_effect()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         # Should detect even if returning None
         assert len(violations) == 1
 
     def test_e2_empty_file_no_errors(self) -> None:
         """E-2: Empty file → no errors."""
         source = ""
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_e3_syntax_error_file_skipped(self, tmp_path: Path) -> None:
@@ -92,7 +76,7 @@ class Foo:
 obj = Foo()
 obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].method_name == "method"
 
@@ -115,14 +99,13 @@ bar = Bar()
 foo.method()
 bar.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         # Only Foo.method() is @nodiscard
-        # Both foo.method() and bar.method() are expression statements
-        # Both will trigger violations since both calls are expression statements
-        # and the detector finds @nodiscard on method() (only Foo has it)
-        assert len(violations) == 2
-        assert all(v.method_name == "method" for v in violations)
-        assert all(v.receiver_type == "Foo" for v in violations)
+        # foo.method() is an expression statement and is detected as a violation
+        # bar.method() is not @nodiscard, so it's correctly not flagged
+        assert len(violations) == 1
+        assert violations[0].method_name == "method"
+        assert violations[0].receiver_type == "Foo"
 
     def test_e7_exec_eval_calls_not_analyzed(self) -> None:
         """E-7: exec()/eval() calls → not detected (we don't analyze inside)."""
@@ -137,7 +120,7 @@ class Foo:
 code = "obj = Foo(); obj.method()"
 exec(code)
 """
-        _check_source(source)
+        check_source(source)
 
     def test_e8_large_file_no_crash(self) -> None:
         """E-8: Large file (1000+ lines) → no crash."""
@@ -156,7 +139,7 @@ obj = Foo()
         lines.append("obj.method()")
 
         source = "\n".join(lines)
-        violations = _check_source(source)
+        violations = check_source(source)
 
         # Should complete without crash and detect violation
         assert isinstance(violations, list)
@@ -177,7 +160,7 @@ try:
 except Exception:
     pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
 
     def test_e11_method_chain_first_discarded_ok(self) -> None:
@@ -196,7 +179,7 @@ class Foo:
 obj = Foo()
 obj.m1().m2()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         # m1() is not discarded; its return value is used by .m2()
         assert len(violations) == 0
 
@@ -216,7 +199,7 @@ class Foo:
 obj = Foo()
 obj.m1().m2()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         # m2() is discarded  # noqa: ERA001
         assert len(violations) == 1
         assert violations[0].method_name == "m2"
@@ -235,7 +218,7 @@ obj = Foo()
 f = lambda: obj.method()
 f()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         # The call inside lambda is implicit return, not discarded
         assert len(violations) == 0
 
@@ -258,7 +241,7 @@ obj = Foo()
 obj.method()
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         # Stubs should be processed
         assert result.files_checked >= 1
@@ -285,7 +268,7 @@ obj.method()
             # Symlinks might not be supported on all systems
             pytest.skip("Symlinks not supported")
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         # File should be processed once, not twice
         assert result.files_checked == 1
@@ -305,7 +288,7 @@ class Foo:
 obj = Foo()
 obj.method()
 """
-        violations_no_comment = _check_source(source_no_comment)
+        violations_no_comment = check_source(source_no_comment)
         assert len(violations_no_comment) == 1
 
         # Test with comment - should suppress violation
@@ -320,7 +303,7 @@ class Foo:
 obj = Foo()
 obj.method()  # nodiscard: ignore
 """
-        violations_with_comment = _check_source(source_with_comment)
+        violations_with_comment = check_source(source_with_comment)
         assert len(violations_with_comment) == 0
 
     def test_e18_underscore_assignment_ok(self) -> None:
@@ -337,7 +320,7 @@ obj = Foo()
 _ = obj.method()
 _result = obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         # Assignments (even to _) are not expression statements
         assert len(violations) == 0
 
@@ -373,7 +356,7 @@ from typing import List
 class Empty:
     pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_multiple_nested_blocks(self) -> None:
@@ -395,7 +378,7 @@ if True:
         except:
             pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].line == 14
 
@@ -412,7 +395,7 @@ class Foo:
     def caller(self):
         result: "Foo" = self.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0  # Correctly assigned
 
     def test_builtin_type_names(self) -> None:
@@ -428,5 +411,5 @@ class Foo:
 obj = Foo()
 obj.get_int()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1

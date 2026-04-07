@@ -42,14 +42,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Files or directories to check",
     )
     check_parser.add_argument(
-        "--src",
-        dest="src_roots",
-        action="append",
-        type=Path,
-        default=None,
-        help="Source root(s) for import resolution",
-    )
-    check_parser.add_argument(
         "--exclude",
         action="append",
         default=None,
@@ -79,7 +71,6 @@ def _handle_check(args: argparse.Namespace) -> int:
     if not paths:
         paths = [Path()]
 
-    src_roots: list[Path] | None = args.src_roots or None
     exclude = args.exclude or _config_str_list(config, "exclude", [])
     output_format = args.output_format or _config_str(config, "format", "text")
 
@@ -88,7 +79,7 @@ def _handle_check(args: argparse.Namespace) -> int:
             sys.stderr.write(f"Error: path does not exist: {p}\n")
             return 2
 
-    result = check(paths, src_roots=src_roots, exclude=exclude)
+    result = check(paths, exclude=exclude)
 
     if output_format == "json":
         _output_json(result)

@@ -33,7 +33,7 @@ schema = Schema()
 schema.merge(Schema())
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         assert len(result.violations) == 1
         assert result.violations[0].method_name == "merge"
@@ -59,7 +59,7 @@ schema = Schema()
 result = schema.merge(Schema())
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         assert len(result.violations) == 0
 
@@ -89,10 +89,49 @@ u = User()
 u.with_name("alice")
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         assert len(result.violations) == 1
         assert result.violations[0].method_name == "with_name"
+
+    def test_attribute_chain_resolves_non_nodiscard_receiver(self, tmp_path: Path) -> None:
+        """Issue #2: Same method name on @nodiscard and non-@nodiscard class.
+
+        When receiver type is resolved via attribute chain, the correct
+        class is identified and no false positive occurs.
+        """
+        (tmp_path / "models.py").write_text("""
+from nodiscard import nodiscard
+
+class LearnerSchema:
+    @nodiscard
+    def update_concept_embedding(self, concept_id, embedding) -> "LearnerSchema":
+        return LearnerSchema()
+""")
+        (tmp_path / "repository.py").write_text("""
+class LearnerSchemaRepository:
+    async def update_concept_embedding(self, concept_id, embedding) -> None:
+        pass
+""")
+        (tmp_path / "uow.py").write_text("""
+from repository import LearnerSchemaRepository
+
+class UnitOfWork:
+    schemas: LearnerSchemaRepository
+""")
+        (tmp_path / "service.py").write_text("""
+from uow import UnitOfWork
+
+async def do_work(uow: UnitOfWork):
+    await uow.schemas.update_concept_embedding("c1", [0.1])
+""")
+
+        result = check([tmp_path])
+
+        # uow.schemas is LearnerSchemaRepository (not @nodiscard)
+        # → no false positive
+        service_violations = [v for v in result.violations if "service.py" in str(v.file_path)]
+        assert len(service_violations) == 0
 
     def test_reexport_through_non_init_module(self, tmp_path: Path) -> None:
         """Re-export through a regular module (not __init__.py) is detected."""
@@ -116,7 +155,7 @@ c = Config()
 c.with_debug(True)
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         assert len(result.violations) == 1
         assert result.violations[0].method_name == "with_debug"
@@ -145,7 +184,7 @@ from dir1.models import Foo
 Foo().method()
 """)
 
-        result = check([dir1, dir2], src_roots=[tmp_path])
+        result = check([dir1, dir2])
 
         # At least 2 files checked
         assert result.files_checked >= 2
@@ -174,7 +213,7 @@ c = Child()
 c.method()
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         # Child inherits @nodiscard requirement from Parent
         assert len(result.violations) >= 1
@@ -202,7 +241,7 @@ obj = MyClass()
 obj.transform()
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         # Violation propagated from Mixin
         assert len(result.violations) >= 1
@@ -233,7 +272,7 @@ obj = MyClass()
 obj.copy()
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         # Direct violation in file_b
         assert len(result.violations) >= 1
@@ -265,9 +304,10 @@ c = C()
 c.method()
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
-        # C inherits from A first in MRO, so method() requires return
+        # c = C() at module level → type inferred as C.
+        # C inherits @nodiscard method from A via MRO → violation detected.
         assert len(result.violations) >= 1
 
     def test_import_star_resolution(self, tmp_path: Path) -> None:
@@ -290,7 +330,7 @@ obj = MyClass()
 obj.method()
 """)
 
-        check([tmp_path], src_roots=[tmp_path])
+        check([tmp_path])
 
     def test_nested_package_structure(self, tmp_path: Path) -> None:
         """Nested package with @nodiscard across packages."""
@@ -316,7 +356,7 @@ item = Item()
 item.duplicate()
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         assert len(result.violations) == 1
         assert result.violations[0].method_name == "duplicate"
@@ -344,7 +384,49 @@ class Helper:
         f.method()
 """)
 
-        result = check([tmp_path], src_roots=[tmp_path])
+        result = check([tmp_path])
 
         # Should complete without hanging
         assert result.files_checked >= 2
+
+    def test_issue2_false_negative_indirect_import(self, tmp_path: Path) -> None:
+        """False negative: @nodiscard method not detected when class is not directly imported.
+
+        File imports an interface, but operates on an instance whose class
+        has @nodiscard methods defined in a different module.
+        """
+        pkg = tmp_path / "core"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+
+        (pkg / "schema.py").write_text("""
+from nodiscard import nodiscard
+
+class LearnerSchema:
+    @nodiscard
+    def merge(self, other: "LearnerSchema") -> "LearnerSchema":
+        return LearnerSchema()
+""")
+
+        (pkg / "interface.py").write_text("""
+from typing import Protocol
+
+class ISchemaUsecase(Protocol):
+    def get_schema(self) -> object: ...
+""")
+
+        (tmp_path / "usecase.py").write_text("""
+from core.interface import ISchemaUsecase
+
+def process(usecase: ISchemaUsecase, schema):
+    # schema is actually a LearnerSchema, but not imported here
+    schema.merge(schema)
+""")
+
+        result = check([tmp_path])
+
+        usecase_violations = [v for v in result.violations if "usecase.py" in str(v.file_path)]
+        # schema.merge() should be detected even though LearnerSchema
+        # is not directly imported in usecase.py
+        assert len(usecase_violations) == 1
+        assert usecase_violations[0].method_name == "merge"

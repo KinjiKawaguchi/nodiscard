@@ -2,26 +2,7 @@
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
-from nodiscard._collector import ASTMethodCollector
-from nodiscard._detector import ExpressionStatementDetector
-from nodiscard._models import Violation
-from nodiscard._type_tracker import LocalTypeTracker
-
-
-def _check_source(source: str) -> list[Violation]:
-    """Parse source and detect violations."""
-    tree = ast.parse(source)
-    tree._source_lines = source.splitlines()  # type: ignore[attr-defined]
-    fp = Path("test.py")
-    collector = ASTMethodCollector()
-    tracker = LocalTypeTracker()
-    detector = ExpressionStatementDetector()
-    methods = collector.collect(tree, fp)
-    types = tracker.infer_types(tree, fp)
-    return detector.detect(tree, fp, methods, types, tuple(source.splitlines()))
+from tests.conftest import check_source
 
 
 class TestDetectionBasic:
@@ -39,7 +20,7 @@ class Foo:
 obj = Foo()
 obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].method_name == "method"
         assert violations[0].line == 9
@@ -57,7 +38,7 @@ class Foo:
     def other(self):
         self.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].method_name == "method"
         assert violations[0].line == 9
@@ -76,7 +57,7 @@ obj.method()
 obj.method()
 obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 3
         assert violations[0].line == 9
         assert violations[1].line == 10
@@ -91,7 +72,7 @@ obj.method()
 obj = Foo()
 obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_b5_file_with_zero_violations_empty_result(self) -> None:
@@ -106,7 +87,7 @@ class Foo:
 obj = Foo()
 x = obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 0
 
     def test_b6_await_async_method_expression_detected(self) -> None:
@@ -125,7 +106,7 @@ async def main():
 
 asyncio.run(main())
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].method_name == "async_method"
         assert violations[0].line == 11
@@ -145,7 +126,7 @@ try:
 except Exception:
     pass
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].line == 10
 
@@ -163,7 +144,7 @@ if True:
     if True:
         obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].line == 11
 
@@ -180,7 +161,7 @@ obj = Foo()
 for _ in range(1):
     obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].line == 10
 
@@ -199,7 +180,7 @@ while i < 1:
     obj.method()
     i += 1
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].line == 11
 
@@ -216,6 +197,6 @@ obj = Foo()
 with open('/dev/null') as f:
     obj.method()
 """
-        violations = _check_source(source)
+        violations = check_source(source)
         assert len(violations) == 1
         assert violations[0].line == 10
