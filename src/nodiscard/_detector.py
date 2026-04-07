@@ -69,10 +69,10 @@ def _check_expr_stmt(stmt: ast.Expr, ctx: DetectionContext) -> None:
 def _recurse_into(stmt: ast.stmt, ctx: DetectionContext) -> None:
     """Recurse into compound statements (if, for, try, with, etc.)."""
     child_bodies: list[list[ast.stmt]] = []
-    if isinstance(stmt, (ast.If, ast.For, ast.While)):
+    if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While)):
         child_bodies.append(stmt.body)
         child_bodies.append(stmt.orelse)
-    elif isinstance(stmt, ast.With):
+    elif isinstance(stmt, (ast.With, ast.AsyncWith)):
         child_bodies.append(stmt.body)
     elif isinstance(stmt, (ast.Try, ast.TryStar)):
         child_bodies.append(stmt.body)

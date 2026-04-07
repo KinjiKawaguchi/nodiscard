@@ -103,32 +103,32 @@ u.with_name("alice")
         (tmp_path / "models.py").write_text("""
 from nodiscard import nodiscard
 
-class LearnerSchema:
+class Document:
     @nodiscard
-    def update_concept_embedding(self, concept_id, embedding) -> "LearnerSchema":
-        return LearnerSchema()
+    def update_metadata(self, key, value) -> "Document":
+        return Document()
 """)
         (tmp_path / "repository.py").write_text("""
-class LearnerSchemaRepository:
-    async def update_concept_embedding(self, concept_id, embedding) -> None:
+class DocumentRepository:
+    async def update_metadata(self, key, value) -> None:
         pass
 """)
         (tmp_path / "uow.py").write_text("""
-from repository import LearnerSchemaRepository
+from repository import DocumentRepository
 
 class UnitOfWork:
-    schemas: LearnerSchemaRepository
+    documents: DocumentRepository
 """)
         (tmp_path / "service.py").write_text("""
 from uow import UnitOfWork
 
 async def do_work(uow: UnitOfWork):
-    await uow.schemas.update_concept_embedding("c1", [0.1])
+    await uow.documents.update_metadata("title", "new")
 """)
 
         result = check([tmp_path])
 
-        # uow.schemas is LearnerSchemaRepository (not @nodiscard)
+        # uow.documents is DocumentRepository (not @nodiscard)
         # → no false positive
         service_violations = [v for v in result.violations if "service.py" in str(v.file_path)]
         assert len(service_violations) == 0
@@ -389,7 +389,7 @@ class Helper:
         # Should complete without hanging
         assert result.files_checked >= 2
 
-    def test_issue2_false_negative_indirect_import(self, tmp_path: Path) -> None:
+    def test_false_negative_indirect_import(self, tmp_path: Path) -> None:
         """False negative: @nodiscard method not detected when class is not directly imported.
 
         File imports an interface, but operates on an instance whose class
@@ -399,34 +399,174 @@ class Helper:
         pkg.mkdir()
         (pkg / "__init__.py").write_text("")
 
-        (pkg / "schema.py").write_text("""
+        (pkg / "document.py").write_text("""
 from nodiscard import nodiscard
 
-class LearnerSchema:
+class Document:
     @nodiscard
-    def merge(self, other: "LearnerSchema") -> "LearnerSchema":
-        return LearnerSchema()
+    def merge(self, other: "Document") -> "Document":
+        return Document()
 """)
 
         (pkg / "interface.py").write_text("""
 from typing import Protocol
 
-class ISchemaUsecase(Protocol):
-    def get_schema(self) -> object: ...
+class IDocumentService(Protocol):
+    def get_document(self) -> object: ...
 """)
 
         (tmp_path / "usecase.py").write_text("""
-from core.interface import ISchemaUsecase
+from core.interface import IDocumentService
 
-def process(usecase: ISchemaUsecase, schema):
-    # schema is actually a LearnerSchema, but not imported here
-    schema.merge(schema)
+def process(service: IDocumentService, doc):
+    # doc is actually a Document, but not imported here
+    doc.merge(doc)
 """)
 
         result = check([tmp_path])
 
         usecase_violations = [v for v in result.violations if "usecase.py" in str(v.file_path)]
-        # schema.merge() should be detected even though LearnerSchema
+        # doc.merge() should be detected even though Document
         # is not directly imported in usecase.py
         assert len(usecase_violations) == 1
         assert usecase_violations[0].method_name == "merge"
+
+    def test_unique_method_detected_without_type_inference(self, tmp_path: Path) -> None:
+        """Method name unique to @nodiscard class should be detected
+        even when receiver type is unknown.
+
+        `add_item` exists only on Collection (@nodiscard).
+        The caller does not import Collection.
+        Detection should not require type inference.
+        """
+        (tmp_path / "domain.py").write_text("""
+from nodiscard import nodiscard
+
+class Collection:
+    @nodiscard
+    def add_item(self, item):
+        return Collection()
+
+    @nodiscard
+    def merge(self, other):
+        return Collection()
+""")
+
+        (tmp_path / "repository.py").write_text("""
+class Store:
+    def save(self, obj):
+        pass
+""")
+
+        (tmp_path / "usecase.py").write_text("""
+def process(coll, store):
+    coll.add_item("test")   # VIOLATION: unique to @nodiscard class
+    coll.merge(coll)         # VIOLATION: unique to @nodiscard class
+    store.save(coll)         # OK: save is not @nodiscard
+""")
+
+        result = check([tmp_path])
+
+        usecase_violations = [v for v in result.violations if "usecase.py" in str(v.file_path)]
+        methods = {v.method_name for v in usecase_violations}
+        assert "add_item" in methods, "add_item should be detected (unique to @nodiscard class)"
+        assert "merge" in methods, "merge should be detected (unique to @nodiscard class)"
+        assert len(usecase_violations) == 2
+
+    def test_ambiguous_method_with_non_nodiscard_class(self, tmp_path: Path) -> None:
+        """When method name exists on both @nodiscard and non-@nodiscard
+        classes, the ambiguous call is suppressed to avoid false positives.
+
+        `update` exists on both ImmutableConfig (@nodiscard) and Store (not @nodiscard).
+        Without type inference, the ambiguous call should not be flagged.
+        """
+        (tmp_path / "domain.py").write_text("""
+from nodiscard import nodiscard
+
+class ImmutableConfig:
+    @nodiscard
+    def update(self, data):
+        return ImmutableConfig()
+""")
+
+        (tmp_path / "repository.py").write_text("""
+class Store:
+    def update(self, entity):
+        pass  # side-effect method, not @nodiscard
+""")
+
+        (tmp_path / "usecase.py").write_text("""
+from repository import Store
+
+def process(config, store: Store):
+    config.update("data")   # ambiguous: could be ImmutableConfig or something else
+    store.update(config)     # should NOT be flagged: store is Store
+""")
+
+        result = check([tmp_path])
+
+        usecase_violations = [v for v in result.violations if "usecase.py" in str(v.file_path)]
+        # store.update() must NOT be flagged (type is known as Store)
+        store_violations = [v for v in usecase_violations if v.line == 5]
+        assert len(store_violations) == 0, "store.update() should not be flagged"
+
+    def test_async_with_body_is_traversed(self, tmp_path: Path) -> None:
+        """Violations inside `async with` blocks must be detected.
+
+        This was a regression where `ast.AsyncWith` was not traversed.
+        """
+        (tmp_path / "domain.py").write_text("""
+from nodiscard import nodiscard
+
+class Document:
+    @nodiscard
+    def merge(self, other):
+        return Document()
+""")
+
+        (tmp_path / "service.py").write_text("""
+class Connection:
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *args):
+        pass
+
+async def process(doc):
+    async with Connection() as conn:
+        doc.merge(doc)  # VIOLATION inside async with
+""")
+
+        result = check([tmp_path])
+
+        service_violations = [v for v in result.violations if "service.py" in str(v.file_path)]
+        assert len(service_violations) == 1
+        assert service_violations[0].method_name == "merge"
+
+    def test_async_for_body_is_traversed(self, tmp_path: Path) -> None:
+        """Violations inside `async for` blocks must be detected.
+
+        Ensures `ast.AsyncFor` is traversed alongside `ast.For`.
+        """
+        (tmp_path / "domain.py").write_text("""
+from nodiscard import nodiscard
+
+class Document:
+    @nodiscard
+    def transform(self):
+        return Document()
+""")
+
+        (tmp_path / "service.py").write_text("""
+async def aiter():
+    yield 1
+
+async def process(doc):
+    async for _ in aiter():
+        doc.transform()  # VIOLATION inside async for
+""")
+
+        result = check([tmp_path])
+
+        service_violations = [v for v in result.violations if "service.py" in str(v.file_path)]
+        assert len(service_violations) == 1
+        assert service_violations[0].method_name == "transform"
